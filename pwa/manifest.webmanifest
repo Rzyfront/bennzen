@@ -1,0 +1,12 @@
+{
+  "name": "BENNZEN",
+  "short_name": "BENNZEN",
+  "description": "Cliente de voz para agentes CLI (Claude / Codex / OpenCode)",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "icons": [
+    { "src": "./assets/Logo.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
