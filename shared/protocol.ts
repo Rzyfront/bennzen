@@ -60,6 +60,17 @@ export type ClientMsg =
   | { t: 'term-input'; sectionId: string; data: string }
   // modo pty: redimensionar el PTY cuando cambia el xterm
   | { t: 'term-resize'; sectionId: string; cols: number; rows: number }
+  // adjuntar imagen: el orquestador la guarda en un archivo temporal y devuelve su
+  // ruta (image-saved). Luego el cliente inyecta esa ruta en el prompt (say/term-input),
+  // que es como los CLIs con visión (Claude Code) reciben imágenes. `data` = base64
+  // sin el prefijo `data:...;base64,`. `id` lo genera el cliente para casar la respuesta.
+  | { t: 'upload-image'; sectionId: string; id: string; name: string; mime: string; data: string }
+  // modo pty: activa/desactiva la CAPTURA TOTAL de la prosa para el proxy de
+  // limpieza. Sigue al toggle `ttsClean` del cliente: con full=true el extractor
+  // relaja sus filtros y captura tablas, código, comandos y resultados de
+  // herramientas (el agente de limpieza los traduce a lenguaje natural); con
+  // full=false vuelve al filtrado normal (solo prosa del asistente).
+  | { t: 'tts-capture'; sectionId: string; full: boolean }
   | { t: 'close'; sectionId: string };
 
 /** Mensajes orquestador → PWA. */
@@ -73,4 +84,7 @@ export type ServerMsg =
   | { t: 'term-data'; sectionId: string; data: string }
   // texto en prosa del agente (extraído) → la PWA lo manda a TTS
   | { t: 'speak'; sectionId: string; text: string }
+  // imagen adjunta ya guardada en disco: `path` es la ruta absoluta a inyectar en
+  // el prompt; `id` casa con el upload-image que la originó.
+  | { t: 'image-saved'; sectionId: string; id: string; path: string; name: string }
   | { t: 'error'; sectionId?: string; message: string };

@@ -79,8 +79,13 @@ const NOISE =
   /(shift\+tab|esc to interrupt|bypass permissions|for agents|to cycle|ctx:\s*\d|\bfor \d+\s*s\b|\(\d+s\)|tips for getting started|welcome back|what's new|release-notes|context left|\/effort|tokens?\b.*\bused|thought:\s*\d|ctrl\+\w|·\s*thinking|\b\d+(\.\d+)?k\b\s*\(\d+%\))/i;
 /** Cuántas líneas de input recientes recordamos para suprimir su eco. */
 const INPUT_RING = 8;
-/** Debounce: esperamos a que el redibujado se asiente antes de extraer. */
-const DEBOUNCE_MS = 500;
+/**
+ * Debounce: esperamos a que el redibujado se asiente antes de extraer. Se bajó de
+ * 500 a 300ms (Fase 5.3) para recortar latencia hasta el primer audio; el ritmo de
+ * lectura lo marca ahora el segmentador del cliente (ramp-up + settle/max), y el
+ * dedup semántico (normKey) absorbe los parciales extra que 300ms deja pasar.
+ */
+const DEBOUNCE_MS = 300;
 /** Tope de prosa por evento (evita TTS gigantes). */
 const MAX_PROSE = 600;
 /** Tope de líneas recordadas como "ya habladas" (ring para no crecer sin fin). */
@@ -90,7 +95,10 @@ export class TerminalExtractor {
   private term: InstanceType<typeof Terminal>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private recentInput: string[] = [];
-  // Líneas ya habladas (Set para O(1) + orden para acotar el tamaño).
+  // Líneas ya habladas, guardadas como CLAVE NORMALIZADA (normKey): números,
+  // porcentajes y timers colapsados a placeholders, para que un redibujado de
+  // progreso ("compilando 45%" → "78%") no cuente como línea nueva (Fase 5.1).
+  // Set para O(1) + orden (spokenOrder) para acotar el tamaño y escanear contención.
   private spoken = new Set<string>();
   private spokenOrder: string[] = [];
   // Hasta la primera interacción del usuario no hablamos nada (suprime banner).
@@ -98,6 +106,11 @@ export class TerminalExtractor {
   // Perfil de extracción según el agente (marca de prosa / modo sin-marca).
   private assistant: Set<string>;
   private speakUnmarked: boolean;
+  // Captura TOTAL: cuando la limpieza del cliente está activa, relajamos los
+  // filtros para capturar tablas, código, comandos y resultados de herramientas
+  // (el agente de limpieza los traduce a lenguaje natural). Solo seguimos
+  // descartando la caja de input, el eco y el chrome puro (spinners, footer).
+  private captureAll = false;
 
   constructor(
     cols: number,
@@ -143,6 +156,11 @@ export class TerminalExtractor {
     this.term.resize(cols, rows);
   }
 
+  /** Activa/desactiva la captura total (limpieza ON en el cliente). */
+  setCaptureAll(on: boolean): void {
+    this.captureAll = on;
+  }
+
   dispose(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
@@ -177,7 +195,11 @@ export class TerminalExtractor {
       if (raw === undefined) continue;
       const role = this.lineRole(raw);
       if (role === 'blank') continue; // salto de párrafo: conserva el estado
-      if (role === 'assistant') {
+      if (this.captureAll) {
+        // Captura total: todo lo visible menos el prompt del usuario. cleanLine
+        // sigue quitando decoración, chrome (NOISE), avisos y eco.
+        if (role === 'user') continue;
+      } else if (role === 'assistant') {
         inAssistant = true;
       } else if (role === 'user' || role === 'other') {
         inAssistant = false; // cambia de hablante → cierra el bloque del agente
@@ -191,11 +213,29 @@ export class TerminalExtractor {
     return out;
   }
 
-  /** Marca una línea como ya-hablada, acotando el ring. */
+  /**
+   * Clave de comparación para el dedup: colapsa lo VOLÁTIL (números, porcentajes,
+   * timers, versiones, horas) a placeholders y normaliza espacios/caja. Solo se usa
+   * para COMPARAR — se habla siempre el texto original (Fase 5.1). Así dos redibujados
+   * que difieren solo en cifras ("guardadas 3 filas" / "guardadas 5 filas") comparten
+   * clave y no se leen dos veces.
+   */
+  private normKey(line: string): string {
+    // Colapsa toda corrida de dígitos (con decimales, horas, versiones y % pegados,
+    // incluso adyacentes a letras: "12.4s", "v2.3.1", "45%") a un único placeholder.
+    return line
+      .replace(/\d+(?:[.,:]\d+)*%?/g, '#')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  /** Marca una línea como ya-hablada (por su clave normalizada), acotando el ring. */
   private remember(line: string): void {
-    if (this.spoken.has(line)) return;
-    this.spoken.add(line);
-    this.spokenOrder.push(line);
+    const key = this.normKey(line);
+    if (this.spoken.has(key)) return;
+    this.spoken.add(key);
+    this.spokenOrder.push(key);
     if (this.spokenOrder.length > SPOKEN_CAP) {
       const old = this.spokenOrder.shift();
       if (old !== undefined) this.spoken.delete(old);
@@ -214,9 +254,12 @@ export class TerminalExtractor {
 
     const emit: string[] = [];
     for (const line of cur) {
-      if (this.spoken.has(line)) continue;
+      const key = this.normKey(line);
+      if (this.spoken.has(key)) continue; // ya dicho (comparación normalizada)
       // Evita hablar un fragmento ya contenido en algo dicho (redibujado parcial).
-      if (this.spokenOrder.some((s) => s.includes(line))) {
+      // Solo para claves SUSTANCIALES (≥16 chars): claves cortas normalizadas
+      // (p.ej. "#") son demasiado promiscuas y suprimirían líneas reales distintas.
+      if (key.length >= 16 && this.spokenOrder.some((s) => s.includes(key))) {
         this.remember(line);
         continue;
       }
@@ -225,7 +268,8 @@ export class TerminalExtractor {
     }
 
     if (emit.length === 0) return;
-    const text = emit.join(' ').slice(0, MAX_PROSE).trim();
+    const cap = this.captureAll ? 4000 : MAX_PROSE;
+    const text = emit.join(' ').slice(0, cap).trim();
     if (text) this.onProse(text);
   }
 
@@ -237,12 +281,14 @@ export class TerminalExtractor {
     const trimmed = line.trim().replace(TUI_GLYPHS, '').trim();
     if (!trimmed) return '';
 
-    // Tool-call de claude (`Bash(...)`, `Read(...)`, `Update(file)`…): no es prosa.
-    if (/^[A-Z][\w.-]*\(/.test(trimmed)) return '';
+    // Tool-call de claude (`Bash(...)`, `Read(...)`, `Update(file)`…): en modo
+    // normal no es prosa; en captura total la conservamos (el agente de limpieza
+    // dirá qué hace el comando).
+    if (!this.captureAll && /^[A-Z][\w.-]*\(/.test(trimmed)) return '';
 
     // Necesita >= 2 caracteres de palabra para valer la pena hablarla.
     const wordCount = (trimmed.match(WORD_CHAR) ?? []).length;
-    if (wordCount < 2) return '';
+    if (wordCount < (this.captureAll ? 1 : 2)) return '';
 
     // Mobiliario de la TUI (footer, atajos, spinner, banner).
     if (NOISE.test(trimmed)) return '';

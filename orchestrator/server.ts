@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { SessionRegistry } from './sessions';
 import { PtyRegistry } from './pty';
 import { handleVoiceHttp } from './voice-proxy';
+import { saveImage, cleanupSection, cleanupAllUploads } from './uploads';
 import { applyDelta, pushUser } from '../shared/transcript';
 import type { ClientMsg, ServerMsg } from '../shared/protocol';
 
@@ -38,6 +39,10 @@ const httpServer = http.createServer((req, res) => {
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(`BENNZEN — orquestador (API + WebSocket). La app está en ${PWA_URL}`);
 });
+
+// Barrido inicial: borra adjuntos temporales de ejecuciones anteriores para no
+// acumular basura en el tmpdir entre arranques del orquestador.
+cleanupAllUploads();
 
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -156,12 +161,36 @@ async function handle(ws: WebSocket, msg: ClientMsg): Promise<void> {
         ptyRegistry.resize(msg.sectionId, msg.cols, msg.rows);
         return;
       }
+      case 'tts-capture': {
+        // Solo aplica a pty: ajusta el modo de captura del extractor. En rpc el
+        // texto ya se emite completo, así que es un no-op silencioso.
+        ptyRegistry.setCaptureAll(msg.sectionId, msg.full);
+        return;
+      }
+      case 'upload-image': {
+        // Guarda la imagen en un archivo temporal y devuelve su ruta absoluta;
+        // el cliente la inyectará en el prompt (say/term-input). Los errores de
+        // validación (MIME/tamaño) se reportan como {t:'error'} sin tumbar la conexión.
+        try {
+          const { path } = saveImage(msg.sectionId, msg.name, msg.mime, msg.data);
+          send(ws, { t: 'image-saved', sectionId: msg.sectionId, id: msg.id, path, name: msg.name });
+        } catch (e) {
+          send(ws, {
+            t: 'error',
+            sectionId: msg.sectionId,
+            message: `No se pudo guardar la imagen: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
+        return;
+      }
       case 'close': {
         if (ptyRegistry.has(msg.sectionId)) {
           await ptyRegistry.close(msg.sectionId);
         } else {
           await registry.close(msg.sectionId);
         }
+        // Retira los adjuntos temporales de la sección (best-effort).
+        cleanupSection(msg.sectionId);
         console.log(`[orch] sección ${msg.sectionId} cerrada (agente liberado)`);
         broadcastSnapshot();
         return;

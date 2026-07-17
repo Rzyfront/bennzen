@@ -32,7 +32,13 @@
           <!-- pty: terminal real (xterm) -->
           <div id="term" class="term" hidden></div>
           <div class="bar" id="textbar">
-            <input id="text" type="text" placeholder="…o escribe y Enter" />
+            <!-- Fila de adjuntos pendientes (chips con miniatura), solo modo rpc -->
+            <div id="attachments" class="attachments" hidden></div>
+            <div class="bar-row">
+              <button id="attach-btn" class="attach-btn" title="Adjuntar imagen (PNG, JPG, GIF, WebP)">📎</button>
+              <input id="text" type="text" placeholder="…o escribe y Enter" />
+              <input id="attach-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+            </div>
           </div>
         </div>
 
@@ -190,6 +196,15 @@
               <label>Prompt (vacío = default del server)
                 <textarea id="clean-prompt" rows="6" placeholder="Se carga del servidor al abrir el modal…"></textarea>
               </label>
+              <details class="vadvanced">
+                <summary>Tiempos (avanzado)</summary>
+                <label>Asentamiento — settle (ms)
+                  <input id="clean-settle" type="number" min="200" max="5000" step="100" placeholder="1000" />
+                </label>
+                <label>Techo — max (ms)
+                  <input id="clean-max" type="number" min="500" max="10000" step="100" placeholder="3000" />
+                </label>
+              </details>
             </div>
           </fieldset>
 

@@ -74,6 +74,14 @@ export interface CleanSettings {
   model: string;
   /** Prompt de limpieza; vacío = el proxy usa su DEFAULT_CLEANUP_PROMPT. */
   prompt: string;
+  /**
+   * Tiempos del debounce del flush en modo ON (avanzado, Fase 6). Ausentes → los
+   * defaults del motor (CLEAN_SETTLE_MS / CLEAN_MAX_INTERVAL_MS). `settleMs`: ventana
+   * de silencio tras la última ráfaga antes de sintetizar. `maxMs`: techo que fuerza
+   * síntesis cada tanto aunque el stream no pare (evita "solo habla al final").
+   */
+  settleMs?: number;
+  maxMs?: number;
 }
 
 export interface VoiceConfig {
@@ -233,6 +241,13 @@ export interface SttHandlers {
   onFinal(t: string): void;
   onError(m: string): void;
   onEnd?(): void;
+  /**
+   * Solo la ruta API: se dispara con el MediaStream del micro cuando abre (Fase 7).
+   * Permite REUTILIZAR ese stream para el medidor de nivel (una sola apertura de
+   * micro por gesto, menos latencia y un solo permiso). El dueño del ciclo de vida
+   * del stream sigue siendo startApiStt; el consumidor solo lo analiza.
+   */
+  onStream?(stream: MediaStream): void;
 }
 
 /**
@@ -255,6 +270,13 @@ export function startStt(engine: VoiceEngine, cfg: VoiceConfig, h: SttHandlers):
   return startApiStt(cfg, h);
 }
 
+/** Duración mínima de una grabación para molestarse en transcribirla (ms). Por
+ *  debajo es un toque accidental: no vale el round-trip y Whisper alucina con ruido. */
+const MIN_TALK_MS = 350;
+/** Tamaño mínimo del blob de audio para subirlo (bytes). Con opus ~24kbps, 350ms
+ *  ronda 1KB; por debajo de esto es silencio o un toque. */
+const MIN_BLOB_BYTES = 1500;
+
 /** STT vía API: graba con MediaRecorder mientras se mantiene; al stop() sube el audio. */
 function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
   let recorder: MediaRecorder | null = null;
@@ -262,6 +284,7 @@ function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
   const chunks: BlobPart[] = [];
   let stopped = false; // si se soltó antes de que abriera el micro
   let mime = 'audio/webm';
+  let startedAt = 0; // Date.now() al arrancar la grabación (0 = nunca grabó)
 
   const cleanup = () => {
     stream?.getTracks().forEach((t) => t.stop());
@@ -277,7 +300,11 @@ function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
 
   void (async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Constraints: mono + cancelación de eco/ruido/ganancia → menos payload y
+      // mejor transcripción (evita captar el propio TTS y ruido ambiente).
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       if (stopped) {
         // Se soltó antes de abrir: no dejamos el micro vivo ni grabamos nada.
         s.getTracks().forEach((t) => t.stop());
@@ -285,8 +312,19 @@ function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
         return;
       }
       stream = s;
-      mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
-      recorder = mime ? new MediaRecorder(s, { mimeType: mime }) : new MediaRecorder(s);
+      // Comparte el micro ya abierto con el medidor de nivel (Fase 7.1): evita un
+      // segundo getUserMedia. startApiStt sigue siendo el dueño (lo cierra en cleanup).
+      h.onStream?.(s);
+      // Preferimos Opus explícito (mejor compresión que el default) y bajamos el
+      // bitrate: voz mono a ~24kbps basta para STT y aligera la subida.
+      mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : '';
+      recorder = mime
+        ? new MediaRecorder(s, { mimeType: mime, audioBitsPerSecond: 24000 })
+        : new MediaRecorder(s);
 
       recorder.ondataavailable = (ev) => {
         if (ev.data.size > 0) chunks.push(ev.data);
@@ -297,6 +335,7 @@ function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
       recorder.onerror = () => finishWithError('Error grabando audio.');
 
       h.onInterim?.('🎙 grabando…');
+      startedAt = Date.now();
       recorder.start();
     } catch {
       finishWithError('Permiso de micrófono denegado o micrófono no disponible.');
@@ -306,8 +345,11 @@ function startApiStt(cfg: VoiceConfig, h: SttHandlers): SttSession {
   const uploadAndTranscribe = async () => {
     const type = recorder?.mimeType || mime || 'audio/webm';
     const blob = new Blob(chunks, { type });
+    const elapsed = startedAt ? Date.now() - startedAt : 0;
     cleanup();
-    if (blob.size === 0) {
+    // Toque accidental / silencio: grabación demasiado corta o demasiado pequeña
+    // → no vale un round-trip de STT. (MIN_BLOB_BYTES ya cubre blob vacío.)
+    if (blob.size < MIN_BLOB_BYTES || (startedAt && elapsed < MIN_TALK_MS)) {
       h.onEnd?.();
       return;
     }
@@ -352,15 +394,25 @@ export class MicMeter {
   private stream?: MediaStream;
   private raf = 0;
   private stopped = false;
+  // ¿Abrimos NOSOTROS el micro? Si el stream vino de fuera (compartido con el STT,
+  // Fase 7.1), NO cerramos sus tracks en stop(): su dueño (startApiStt) lo hace.
+  private ownsStream = false;
 
   constructor(private onLevel: (level: number) => void) {}
 
-  async start(): Promise<void> {
+  /**
+   * Arranca el medidor. Sin argumento abre su propio micro (`{audio:true}`); con un
+   * `external` reutiliza un stream ya abierto (el del STT por API) → una sola apertura
+   * de micro por gesto. En el caso externo no gestiona el ciclo de vida del stream.
+   */
+  async start(external?: MediaStream): Promise<void> {
     this.stopped = false;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // Si se soltó el botón antes de que el micro abriera, no dejamos el stream vivo.
+    this.ownsStream = !external;
+    const stream = external ?? (await navigator.mediaDevices.getUserMedia({ audio: true }));
+    // Si se soltó el botón antes de que el micro abriera, no dejamos el stream vivo
+    // (solo si es NUESTRO; un stream externo lo cierra su dueño).
     if (this.stopped) {
-      stream.getTracks().forEach((t) => t.stop());
+      if (this.ownsStream) stream.getTracks().forEach((t) => t.stop());
       return;
     }
     this.stream = stream;
@@ -388,7 +440,8 @@ export class MicMeter {
   stop(): void {
     this.stopped = true;
     cancelAnimationFrame(this.raf);
-    this.stream?.getTracks().forEach((t) => t.stop());
+    // Solo cerramos el micro si es NUESTRO; el stream compartido lo cierra su dueño.
+    if (this.ownsStream) this.stream?.getTracks().forEach((t) => t.stop());
     void this.ctx?.close();
     this.onLevel(0);
     this.stream = undefined;
@@ -442,6 +495,70 @@ function chunkSentences(buf: string, emit: (sentence: string) => void): string {
     lastIndex = re.lastIndex;
   }
   return buf.slice(lastIndex);
+}
+
+/** Índice (exclusivo) del fin de la primera frase (.!? seguido de espacio o fin de
+ *  cadena), o -1 si no hay ninguna. Exigir espacio/fin tras el terminador evita
+ *  partir decimales ("3.14") o siglas a media palabra. */
+function firstSentenceEnd(s: string): number {
+  const m = /[.!?]+(?=\s|$)/.exec(s);
+  return m ? m.index + m[0].length : -1;
+}
+
+/** Índice (exclusivo) tras el ÚLTIMO límite de cláusula (, ; :) dentro de s, o -1. */
+function lastClauseEnd(s: string): number {
+  const re = /[,;:](?=\s|$)/g;
+  let idx = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) idx = m.index + 1;
+  return idx;
+}
+
+/**
+ * Motor de segmentación unificado (modos limpieza ON y OFF). Extrae del `buf`
+ * tantos segmentos hablables como pueda, cada uno de hasta ~`target` caracteres,
+ * cortando en el MEJOR límite disponible: fin de frase (.!?) > cláusula (,;:) >
+ * espacio > corte duro. Emite cada segmento con `emit` y devuelve el remanente NO
+ * emitido (vuelve al buf del llamante).
+ *
+ * - Una frase completa que quepa holgadamente se emite entera (natural y
+ *   progresivo), aunque no llene el target.
+ * - Si el buf ya excede el target sin cerrar frase (prosa de captura total, sin
+ *   puntuación), corta por cláusula/espacio dentro de la ventana → no espera.
+ * - `force` (fin de turno / flush): emite también el remanente corto sin cierre.
+ * - Nunca emite segmentos sin caracteres de palabra (puntuación/glifos sueltos):
+ *   se descartan del remanente (no se hablan).
+ */
+export function segmentText(
+  buf: string,
+  target: number,
+  force: boolean,
+  emit: (seg: string) => void,
+): string {
+  let rest = buf.replace(/^\s+/, '');
+  // Cota de seguridad: cada iteración acorta `rest` (cut>0); el tope evita cualquier
+  // bucle patológico ante entradas raras.
+  for (let guard = 0; rest && guard < 10000; guard++) {
+    let cut: number;
+    const se = firstSentenceEnd(rest);
+    if (se > 0 && se <= target * 1.4) {
+      cut = se; // (a) frase completa que cabe → córtala ahí
+    } else if (rest.length >= target) {
+      // (b) material de sobra sin frase que quepa → mejor límite dentro de target
+      const w = rest.slice(0, target);
+      const clause = lastClauseEnd(w);
+      const space = w.lastIndexOf(' ');
+      cut = clause > target * 0.5 ? clause : space > target * 0.5 ? space + 1 : target;
+    } else if (force) {
+      cut = rest.length; // (c) remanente corto, fin de turno → emítelo tal cual
+    } else {
+      break; // aún no hay un corte natural; esperar más texto
+    }
+    const seg = rest.slice(0, cut).trim();
+    rest = rest.slice(cut).replace(/^\s+/, '');
+    if (hasWord(seg)) emit(seg);
+  }
+  return rest;
 }
 
 /** TTS de navegador: cola por frase con SpeechSynthesis. */
@@ -519,22 +636,84 @@ export class BrowserTts implements Tts {
 export { BrowserTts as Speaker };
 
 /**
- * Ventana de silencio (ms) para agrupar fragmentos de un turno con cleanup activo.
- * En modo pty la prosa llega en trozos sueltos según se dibuja la TUI; esperamos
- * este lapso sin trozos nuevos antes de sintetizar, para leer el turno de una vez.
+ * Ventana de "asentamiento" (ms): tras el último fragmento del turno esperamos
+ * este lapso sin fragmentos nuevos antes de sintetizar. Reacciona rápido al fin
+ * de una ráfaga. Se REPROGRAMA en cada fragmento (debounce clásico).
  */
-const CLEAN_FLUSH_DEBOUNCE_MS = 1500;
+const CLEAN_SETTLE_MS = 1000;
+/**
+ * Techo del debounce (ms): tiempo máximo que un fragmento pendiente puede esperar
+ * aunque el stream NO pare. Se arma UNA vez cuando aparece contenido pendiente y
+ * NO se reprograma → garantiza síntesis cada ~3s en un turno continuo (mata el
+ * viejo bug de "solo habla al final", cuando el debounce se reiniciaba sin fin).
+ */
+const CLEAN_MAX_INTERVAL_MS = 3000;
+/**
+ * Tamaño objetivo al re-segmentar el TEXTO YA LIMPIO por frase hacia el TTS (modo
+ * ON). La limpieza ya pasó (bloques grandes → /api/clean), aquí solo troceamos su
+ * salida en frases naturales para el gapless. Sin ramp-up: no aplica al texto limpio.
+ */
+const CLEAN_SENTENCE_TARGET = 220;
+
+/** ¿La cadena tiene al menos un carácter de palabra (letra o número)? */
+function hasWord(s: string): boolean {
+  return /[\p{L}\p{N}]/u.test(s);
+}
+
+type JobStatus = 'pending' | 'fetching' | 'ready' | 'error';
+/**
+ * Unidad del pipeline TTS: un trozo de texto y la promesa de su audio ya en vuelo.
+ * La cola guarda estos jobs EN ORDEN; la síntesis (fetch) y la reproducción están
+ * desacopladas para poder prefetchear el trozo N+1 mientras suena el N. Desde Fase 2
+ * el texto SIEMPRE llega ya limpio (modo ON limpia antes, vía /api/clean), así que
+ * /api/tts es TTS puro: sin cabeceras de limpieza ni métricas por-job.
+ */
+interface AudioJob {
+  seq: number; // orden monotónico de encolado
+  gen: number; // generación de cancelación a la que pertenece este job
+  text: string; // frase lista para sintetizar (OFF: cruda; ON: ya limpiada)
+  controller: AbortController; // aborta ESTE fetch en barge-in (uno por job)
+  status: JobStatus;
+  blobPromise: Promise<Blob> | null; // null hasta que startFetch la crea
+}
+/**
+ * Unidad de la etapa de LIMPIEZA (modo ON): un bloque grande de texto pendiente de
+ * mandar a /api/clean. Su respuesta limpia se re-segmenta por frase hacia el
+ * pipeline TTS. Se procesan EN ORDEN (worker secuencial) para no barajar el turno.
+ */
+interface CleanJob {
+  gen: number; // generación de cancelación (barge-in lo invalida)
+  text: string; // bloque a limpiar
+  controller: AbortController; // aborta el fetch a /api/clean en barge-in
+}
 
 /**
- * TTS vía API: encola frases, las sintetiza con POST /api/tts y las reproduce
- * con un HTMLAudioElement encadenado (una a la vez, en orden).
+ * TTS vía API con PREFETCH. Encola jobs de texto y sintetiza hasta `lookahead`
+ * trozos en paralelo con POST /api/tts, guardando su audio ORDENADO. Un pump de
+ * reproducción los consume en orden con un HTMLAudioElement por trozo: cuando
+ * termina el trozo N, el audio de N+1 ya suele estar listo → reproduce sin hueco.
  */
 export class ApiTts implements Tts {
   onStateChange?: (speaking: boolean) => void;
   onLevel?: (level: number) => void;
   onCleaning?: (state: 'start' | 'done', info?: { before: number; after: number }) => void;
 
-  private queue: string[] = [];
+  // Pipeline ORDENADO (FIFO): la reproducción consume jobs[0]; los fetches de los
+  // trozos siguientes ya van en vuelo. Reemplaza la vieja cola de texto `queue`.
+  private jobs: AudioJob[] = [];
+  private seq = 0;
+  // Segmentos emitidos desde el último stop() (= inicio de turno del agente, tras
+  // el barge-in). Alimenta el ramp-up: los primeros segmentos del turno son cortos
+  // (arranque de audio veloz), luego crecen (menos llamadas y mejor prosodia).
+  private segCount = 0;
+  // Cap de trozos con fetch en vuelo o ya listos por delante del cabezal. Acota la
+  // RAM (blobs pre-buscados) y frena el prefetch solo si la reproducción se estanca.
+  private readonly lookahead = 3;
+  // Etapa de limpieza (modo ON): cola de bloques pendientes de /api/clean. Se
+  // procesa de UNO EN UNO (worker `cleanBusy`) para emitir las frases limpias EN
+  // ORDEN al pipeline TTS. Vacía en modo OFF.
+  private cleanQueue: CleanJob[] = [];
+  private cleanBusy = false;
   private buf = '';
   private audio: HTMLAudioElement | null = null;
   private currentUrl: string | null = null;
@@ -542,77 +721,210 @@ export class ApiTts implements Tts {
   private wasActive = false;
   // Token de cancelación: al stop() lo incrementamos para descartar fetchs en vuelo.
   private gen = 0;
-  // AbortController del fetch en curso (complemento del gen: aborta la request
-  // al proxy al barge-in, en vez de esperar a que termine para descartar el audio).
-  private abortController: AbortController | null = null;
-  // Timer de debounce del flush con cleanup activo (modo pty): agrupa los
-  // fragmentos que llegan sueltos de la TUI en una sola síntesis por turno.
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  // Debounce con techo del flush con cleanup activo (modo pty). `settleTimer` se
+  // reprograma en cada fragmento (dispara al fin de la ráfaga); `maxTimer` se arma
+  // una sola vez con contenido pendiente y NO se reprograma (dispara cada ~3s
+  // aunque el stream siga) → lectura progresiva, no "todo al final".
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxTimer: ReturnType<typeof setTimeout> | null = null;
   // Web Audio para medir el nivel REAL del audio TTS (alimenta el orbe).
   private actx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private levelData: Uint8Array<ArrayBuffer> | null = null;
   private currentSource: MediaElementAudioSourceNode | null = null;
   private meterRaf = 0;
+  // Métricas por turno (Fase 6.2): llamadas + hits de caché a /api/tts y /api/clean,
+  // y latencia hasta el primer audio. Se vuelcan con console.info al fin del turno
+  // (transición activo→inactivo) o en barge-in. NUNCA a disco (regla anti-appendFileSync).
+  private metrics = { tts: 0, ttsHit: 0, clean: 0, cleanHit: 0 };
+  private turnStart = 0; // performance.now() del inicio del turno (0 = sin turno)
+  private firstAudioMs = -1; // latencia al primer audio del turno (-1 = aún no suena)
 
   constructor(private cfg: VoiceConfig) {}
 
   push(text: string): void {
-    // Limpieza ON: acumula TODO el turno sin trocear; flush() mandará el buf
-    // entero como una sola unidad para que el proxy lo limpie de una pasada.
-    // ttsClean puede no existir en configs viejas migradas → guard defensivo.
-    if (this.cfg.ttsClean?.enabled) {
-      // Separador entre fragmentos que llegan sueltos (pty): sin él se pegarían
-      // palabras al concatenar ("…sesión.Hola"). Solo si el buf no acaba en espacio.
-      if (this.buf && !/\s$/.test(this.buf)) this.buf += ' ';
-      this.buf += text;
-      return;
-    }
+    // Separador entre fragmentos que llegan sueltos (pty): sin él se pegarían
+    // palabras al concatenar ("…sesión.Hola"). Solo si el buf no acaba en espacio.
+    if (this.buf && !/\s$/.test(this.buf)) this.buf += ' ';
     this.buf += text;
-    this.buf = chunkSentences(this.buf, (s) => this.enqueue(s));
+    // Motor unificado: emite segmentos completos (corte natural + ramp-up) y deja
+    // el remanente incompleto en buf. Mismo camino en limpieza ON y OFF; lo que
+    // cambia por modo es el tamaño objetivo (targetLen), el debounce del flush y el
+    // destino del segmento (emitSegment: TTS directo en OFF, /api/clean en ON).
+    this.buf = segmentText(this.buf, this.targetLen(), false, (s) => this.emitSegment(s));
+  }
+
+  /**
+   * Tamaño objetivo del próximo segmento, con RAMP-UP: los primeros segmentos del
+   * turno son cortos (el primer audio arranca en <1s) y crecen con cada segmento
+   * emitido (menos llamadas y mejor prosodia después). En limpieza ON los tamaños
+   * son mayores: cada segmento es una llamada al LLM de limpieza, así que conviene
+   * más contexto por unidad.
+   */
+  private targetLen(): number {
+    const clean = !!this.cfg.ttsClean?.enabled;
+    const first = clean ? 160 : 60; // primer segmento del turno
+    const cap = clean ? 900 : 240; // régimen estable
+    const step = clean ? 240 : 80; // crecimiento por segmento emitido
+    return Math.min(cap, first + this.segCount * step);
   }
 
   flush(immediate = false): void {
-    // Con cleanup activo y sin flush inmediato: debounce. Cada fragmento del turno
-    // (pty) reprograma el timer; solo tras CLEAN_FLUSH_DEBOUNCE_MS sin fragmentos
-    // nuevos se sintetiza el turno entero de una vez → lectura fluida, no troceada.
-    // `immediate` (el `done` de rpc, que sí marca fin de turno) salta el debounce.
+    // Con cleanup activo y sin flush inmediato: debounce CON TECHO. `settleTimer`
+    // se reprograma en cada fragmento (dispara al fin de la ráfaga); `maxTimer` se
+    // arma una vez con contenido pendiente y NO se reprograma → un flush cada
+    // ~CLEAN_MAX_INTERVAL_MS aunque el stream no pare. `immediate` (el `done` de
+    // rpc, fin de turno real) salta el debounce.
     if (this.cfg.ttsClean?.enabled && !immediate) {
-      if (this.flushTimer) clearTimeout(this.flushTimer);
-      this.flushTimer = setTimeout(() => {
-        this.flushTimer = null;
-        this.doFlush();
-      }, CLEAN_FLUSH_DEBOUNCE_MS);
+      // Tiempos configurables (Fase 6) con fallback a los defaults del motor.
+      const settleMs = this.cfg.ttsClean.settleMs ?? CLEAN_SETTLE_MS;
+      const maxMs = this.cfg.ttsClean.maxMs ?? CLEAN_MAX_INTERVAL_MS;
+      if (this.settleTimer) clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => this.timedFlush(), settleMs);
+      if (!this.maxTimer && hasWord(this.buf)) {
+        this.maxTimer = setTimeout(() => this.timedFlush(), maxMs);
+      }
       return;
     }
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
+    this.clearFlushTimers();
     this.doFlush();
   }
 
-  /** Encola el buffer acumulado como una sola unidad (lo consume drain()). */
+  /** Dispara un flush por timer (settle o techo) y limpia ambos timers. */
+  private timedFlush(): void {
+    this.clearFlushTimers();
+    this.doFlush();
+  }
+
+  /** Cancela los timers de debounce del flush (fin de turno, stop, o flush ya hecho). */
+  private clearFlushTimers(): void {
+    if (this.settleTimer) {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = null;
+    }
+    if (this.maxTimer) {
+      clearTimeout(this.maxTimer);
+      this.maxTimer = null;
+    }
+  }
+
+  /**
+   * Vacía el buf al final del turno: segmenta con `force` → emite todo lo que tenga
+   * caracteres de palabra (incluido el último trozo aunque no cierre frase) y deja
+   * en buf solo remanente sin palabras (puntuación/glifos), que se concatenará con
+   * el próximo fragmento. Sin material hablable, es un no-op (no sintetiza vacío).
+   */
   private doFlush(): void {
-    const tail = this.buf.trim();
-    this.buf = '';
-    if (tail) this.enqueue(tail);
+    this.buf = segmentText(this.buf, this.targetLen(), true, (s) => this.emitSegment(s));
+  }
+
+  /**
+   * Enruta un segmento del buf al pipeline correcto según el modo y alimenta el
+   * ramp-up (el siguiente bloque/segmento del turno será mayor):
+   *  - ON  (limpieza): manda el BLOQUE a la etapa de limpieza (/api/clean); su
+   *    salida limpia se re-segmenta por frase y se sintetiza.
+   *  - OFF: encola el segmento directo al pipeline TTS.
+   */
+  private emitSegment(seg: string): void {
+    this.segCount++; // ramp-up: cuenta bloques/segmentos emitidos en el turno
+    if (this.cfg.ttsClean?.enabled) this.enqueueClean(seg);
+    else this.enqueue(seg);
+  }
+
+  /** Encola un bloque para limpiar en /api/clean (modo ON), preservando el orden. */
+  private enqueueClean(text: string): void {
+    if (this.turnStart === 0) this.turnStart = performance.now(); // inicio de turno (métricas)
+    this.cleanQueue.push({ gen: this.gen, text, controller: new AbortController() });
+    this.notify(); // mantiene el orbe activo durante la limpieza
+    void this.pumpClean();
+  }
+
+  /**
+   * Worker de limpieza: procesa el cabezal de `cleanQueue` de UNO EN UNO (en orden),
+   * manda el bloque a /api/clean y, con la respuesta limpia, la re-segmenta por frase
+   * encolándola al pipeline TTS (que la cachea, Fase 1). La UX "limpiando" (onCleaning)
+   * se ata a ESTE fetch, no al TTS. Mismas guardas por generación que pumpPlayback: un
+   * barge-in (stop → gen++) invalida el trabajo en vuelo sin tocar el estado ya reseteado.
+   */
+  private async pumpClean(): Promise<void> {
+    if (this.cleanBusy) return;
+    const job = this.cleanQueue[0];
+    if (!job) {
+      this.notify();
+      return;
+    }
+    this.cleanBusy = true;
+    this.notify();
+    const myGen = this.gen;
+    this.onCleaning?.('start');
+    try {
+      const res = await fetch(`${this.cfg.apiBaseUrl}/api/clean`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...cleanHeaders(this.cfg.ttsClean) },
+        body: JSON.stringify({ text: job.text }),
+        signal: job.controller.signal,
+      });
+      if (myGen !== this.gen) return; // barge-in mientras limpiaba → estado ya reseteado
+      this.metrics.clean++;
+      if (res.headers.get('x-clean-cache') === 'hit') this.metrics.cleanHit++;
+      let clean = job.text; // fallback: si algo va raro, se habla el original
+      let metrics: { before: number; after: number } | undefined;
+      if (res.ok) {
+        const data = (await res.json()) as { clean?: string; before?: number; after?: number };
+        if (myGen !== this.gen) return;
+        if (data.clean) clean = data.clean;
+        const b = Number(data.before);
+        const a = Number(data.after);
+        if (Number.isFinite(b) && Number.isFinite(a) && b > 0 && a > 0) metrics = { before: b, after: a };
+      }
+      this.cleanQueue.shift(); // consume el cabezal (en orden)
+      this.onCleaning?.('done', metrics);
+      this.emitCleanSentences(clean);
+      this.cleanBusy = false;
+      void this.pumpClean(); // siguiente bloque
+    } catch {
+      if (myGen !== this.gen) return; // barge-in / abort → estado ya reseteado por stop()
+      // Falló la limpieza (red/timeout): se habla el original para no perder información.
+      this.cleanQueue.shift();
+      this.onCleaning?.('done');
+      this.emitCleanSentences(job.text);
+      this.cleanBusy = false;
+      void this.pumpClean();
+    }
+  }
+
+  /** Re-segmenta el texto YA LIMPIO por frase y encola cada frase al pipeline TTS. */
+  private emitCleanSentences(clean: string): void {
+    segmentText(clean, CLEAN_SENTENCE_TARGET, true, (s) => this.enqueue(s));
   }
 
   stop(): void {
     this.gen++;
-    this.queue = [];
-    this.buf = '';
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
+    // Aborta TODOS los fetches en vuelo del pipeline (no solo uno). El chequeo
+    // `myGen !== this.gen` tras cada await sigue siendo la guarda lógica principal;
+    // abortar es el complemento para cortar las requests de red cuanto antes.
+    for (const job of this.jobs) {
+      try {
+        job.controller.abort();
+      } catch {
+        /* ya abortado */
+      }
     }
+    // Aborta también los fetches de limpieza en vuelo y vacía su cola (barge-in).
+    for (const cj of this.cleanQueue) {
+      try {
+        cj.controller.abort();
+      } catch {
+        /* ya abortado */
+      }
+    }
+    this.jobs = [];
+    this.cleanQueue = [];
+    this.cleanBusy = false;
+    this.buf = '';
+    this.segCount = 0; // nuevo turno → reinicia el ramp-up
+    this.clearFlushTimers();
     this.playing = false;
-    // Aborta el fetch al proxy en vuelo (si lo hay). El chequeo `myGen !== this.gen`
-    // tras cada await sigue siendo la guarda principal; esto es complemento para
-    // cortar la request de red cuanto antes.
-    this.abortController?.abort();
-    this.abortController = null;
     this.stopMeter();
     this.disconnectSource();
     if (this.audio) {
@@ -623,72 +935,108 @@ export class ApiTts implements Tts {
     this.notify();
   }
 
-  private enqueue(sentence: string): void {
-    if (!sentence) return;
-    this.queue.push(sentence);
+  private enqueue(text: string): void {
+    if (!text) return;
+    if (this.turnStart === 0) this.turnStart = performance.now(); // inicio de turno (métricas)
+    const job: AudioJob = {
+      seq: this.seq++,
+      gen: this.gen, // si stop() cambia gen, este job quedará invalidado
+      text,
+      controller: new AbortController(),
+      status: 'pending',
+      blobPromise: null,
+    };
+    this.jobs.push(job);
     this.notify();
-    void this.drain();
+    this.pumpPrefetch(); // arranca su fetch si hay cupo en la ventana de prefetch
+    void this.pumpPlayback(); // arranca la reproducción si no hay nada sonando
   }
 
-  private async drain(): Promise<void> {
-    if (this.playing) return;
-    const next = this.queue.shift();
-    if (next === undefined) {
-      this.notify();
-      return;
-    }
-    this.playing = true;
-    this.notify();
-    const myGen = this.gen;
-    // AbortController de este fetch: stop() lo aborta para cortar la request al
-    // proxy al barge-in (el gen sigue siendo la guarda lógica principal).
-    const ac = new AbortController();
-    this.abortController = ac;
-    // [DIAG] cleanup — quitar cuando la limpieza funcione. Confirma en la consola
-    // del navegador si esta instancia de ApiTts lleva la config de limpieza.
-    const _ch = cleanHeaders(this.cfg.ttsClean ?? { enabled: false, format: 'openai', url: '', key: '', model: '', prompt: '' });
-    console.log('[cleanup-diag-client] ttsClean=', JSON.stringify(this.cfg.ttsClean),
-      '| headers enviados=', Object.keys(_ch).join(',') || '(ninguno)');
-    // Limpieza activa: el proxy limpia server-side (invisible en Network) antes de
-    // sintetizar. Avisamos a la UI al arrancar el fetch ('start') y al recibir la
-    // respuesta ('done', con el ratio de compactación si el proxy lo expuso).
-    const cleaning = !!this.cfg.ttsClean?.enabled;
-    if (cleaning) this.onCleaning?.('start');
-    try {
+  /** Cabeceras del POST /api/tts (comunes a todos los jobs). TTS puro: la limpieza
+   *  (modo ON) ya ocurrió en /api/clean, así que aquí NO van cabeceras x-voice-clean-*. */
+  private buildTtsHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      ...apiHeaders(this.cfg.ttsApi),
+      // x-voice-lang: deja que MiniMax fuerce la pronunciación según el idioma
+      // configurado (es-ES → Spanish). Otros proveedores lo ignoran.
+      'x-voice-lang': this.cfg.lang,
+    };
+  }
+
+  /** Lanza el fetch de un job y guarda su promesa de audio (sin reproducir aún). */
+  private startFetch(job: AudioJob): void {
+    job.status = 'fetching';
+    job.blobPromise = (async (): Promise<Blob> => {
       const res = await fetch(`${this.cfg.apiBaseUrl}/api/tts`, {
         method: 'POST',
-        // x-voice-lang: deja que MiniMax fuerce la pronunciación según el idioma
-        // configurado (es-ES → Spanish). Otros proveedores lo ignoran.
-        // x-voice-clean-*: activan la limpieza opcional con LLM en el proxy. Solo
-        // se emiten si ttsClean.enabled; ttsClean puede no existir en configs viejas.
-        headers: {
-          'Content-Type': 'application/json',
-          ...apiHeaders(this.cfg.ttsApi),
-          'x-voice-lang': this.cfg.lang,
-          ...cleanHeaders(this.cfg.ttsClean ?? { enabled: false, format: 'openai', url: '', key: '', model: '', prompt: '' }),
-        },
-        body: JSON.stringify({ text: next }),
-        signal: ac.signal,
+        headers: this.buildTtsHeaders(),
+        body: JSON.stringify({ text: job.text }),
+        signal: job.controller.signal,
       });
-      if (myGen !== this.gen) return; // cancelado mientras sintetizaba
+      if (job.gen !== this.gen) throw new Error('cancelado'); // barge-in mientras sintetizaba
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
         throw new Error(`TTS ${res.status} ${detail.slice(0, 240)}`);
       }
-      // Respuesta OK y no cancelada: cerramos el estado de limpieza con el ratio de
-      // compactación si el proxy expuso x-clean-before/x-clean-after (números > 0).
-      if (cleaning) {
-        const b = Number(res.headers.get('x-clean-before'));
-        const a = Number(res.headers.get('x-clean-after'));
-        if (Number.isFinite(b) && Number.isFinite(a) && b > 0 && a > 0) {
-          this.onCleaning?.('done', { before: b, after: a });
-        } else {
-          this.onCleaning?.('done'); // hubo cleanup pero sin métricas legibles
-        }
-      }
+      this.metrics.tts++;
+      if (res.headers.get('x-tts-cache') === 'hit') this.metrics.ttsHit++;
       const blob = await res.blob();
-      if (myGen !== this.gen) return;
+      if (job.gen !== this.gen) throw new Error('cancelado');
+      job.status = 'ready';
+      return blob;
+    })();
+    // Un 'ready' NO libera cupo (sigue ocupado hasta consumirse); un 'error' sí,
+    // así que en ambos casos re-evaluamos el prefetch por si hay que arrancar otro.
+    job.blobPromise
+      .then(() => this.pumpPrefetch())
+      .catch(() => {
+        job.status = 'error';
+        this.pumpPrefetch();
+      });
+  }
 
+  /**
+   * Rellena la ventana de prefetch: arranca fetches de los jobs 'pending' EN ORDEN
+   * mientras haya menos de `lookahead` con fetch en vuelo o ya listos por delante.
+   * Como recorre desde el cabezal, el trozo que se reproducirá antes se sintetiza
+   * primero; el desorden de red queda absorbido por el orden de `jobs`.
+   */
+  private pumpPrefetch(): void {
+    let active = this.jobs.filter((j) => j.status === 'fetching' || j.status === 'ready').length;
+    for (const job of this.jobs) {
+      if (active >= this.lookahead) break;
+      if (job.status === 'pending') {
+        this.startFetch(job);
+        active++;
+      }
+    }
+  }
+
+  /**
+   * Pump de reproducción: consume jobs EN ORDEN, uno a la vez (mutex `playing`).
+   * `await job.blobPromise` resuelve al instante si el trozo ya se prefetcheó
+   * mientras sonaba el anterior → reproducción encadenada sin hueco de red.
+   */
+  private async pumpPlayback(): Promise<void> {
+    if (this.playing) return;
+    const job = this.jobs[0];
+    if (!job) {
+      this.notify();
+      return;
+    }
+    if (job.status === 'pending') this.pumpPrefetch(); // por si aún no arrancó su fetch
+    this.playing = true;
+    this.notify();
+    const myGen = this.gen;
+    try {
+      const blob = await job.blobPromise!;
+      if (myGen !== this.gen) return; // cancelado mientras esperaba el blob
+      this.jobs.shift(); // consume el cabezal
+      this.pumpPrefetch(); // liberó un slot → arranca el siguiente pending
+
+      // Crea el <audio> AQUÍ (no en el fetch): createMediaElementSource solo puede
+      // llamarse UNA vez por elemento, así que cada trozo estrena su propio Audio.
       this.revokeUrl();
       this.currentUrl = URL.createObjectURL(blob);
       const audio = new Audio(this.currentUrl);
@@ -698,7 +1046,8 @@ export class ApiTts implements Tts {
         this.playing = false;
         this.stopMeter();
         this.disconnectSource();
-        void this.drain();
+        // El blob del siguiente trozo ya suele estar 'ready' → arranca sin hueco.
+        void this.pumpPlayback();
       };
       audio.onended = cont;
       audio.onerror = cont;
@@ -710,19 +1059,21 @@ export class ApiTts implements Tts {
         console.warn('[TTS] play() rechazado (¿autoplay sin gesto?):', e instanceof Error ? e.message : e);
         cont();
       });
+      // Latencia al primer audio del turno (métricas Fase 6.2).
+      if (this.firstAudioMs < 0 && this.turnStart > 0) {
+        this.firstAudioMs = performance.now() - this.turnStart;
+      }
       // Engancha el medidor de nivel después, sin bloquear (mejor esfuerzo).
       if (this.onLevel) void this.attachMeter(audio);
     } catch (e) {
-      // Fetch fallido o abortado (barge-in): cerramos el estado de limpieza para
-      // que la UI no quede colgada en "limpiando". El handler en main lo ignora si
-      // el usuario ya está escuchando (listening), así que es seguro en el abort.
-      if (cleaning) this.onCleaning?.('done');
-      if (myGen !== this.gen) return;
-      // Frase fallida: la mostramos en consola (antes se tragaba en silencio) y
-      // seguimos con la siguiente para no bloquear la cola.
-      console.warn('[TTS] frase fallida:', e instanceof Error ? e.message : e);
+      // Fetch fallido o abortado (barge-in): descartamos el job del cabezal y
+      // seguimos con el siguiente para no bloquear la cola.
+      if (this.jobs[0] === job) this.jobs.shift();
+      this.pumpPrefetch();
       this.playing = false;
-      void this.drain();
+      if (myGen !== this.gen) return;
+      console.warn('[TTS] job fallido:', e instanceof Error ? e.message : e);
+      void this.pumpPlayback();
     }
   }
 
@@ -806,10 +1157,36 @@ export class ApiTts implements Tts {
   }
 
   private notify(): void {
-    const active = this.playing || this.queue.length > 0;
+    // Activo también mientras hay limpieza en vuelo (modo ON): el orbe no debe
+    // apagarse en el hueco entre el fin del stream y la llegada del audio limpio.
+    const active =
+      this.playing || this.jobs.length > 0 || this.cleanBusy || this.cleanQueue.length > 0;
     if (active !== this.wasActive) {
       this.wasActive = active;
+      if (!active) this.logMetrics(); // fin de turno (o barge-in) → vuelca métricas
       this.onStateChange?.(active);
     }
+  }
+
+  /** Vuelca las métricas del turno a console.info (estructurado) y las reinicia. */
+  private logMetrics(): void {
+    const m = this.metrics;
+    if (m.tts > 0 || m.clean > 0) {
+      const hitPct = (h: number, n: number) => (n > 0 ? Math.round((h / n) * 100) : 0);
+      console.info('[voz] turno', {
+        ttsCalls: m.tts,
+        ttsCacheHitPct: hitPct(m.ttsHit, m.tts),
+        cleanCalls: m.clean,
+        cleanCacheHitPct: hitPct(m.cleanHit, m.clean),
+        primerAudioMs: this.firstAudioMs >= 0 ? Math.round(this.firstAudioMs) : null,
+      });
+    }
+    this.resetMetrics();
+  }
+
+  private resetMetrics(): void {
+    this.metrics = { tts: 0, ttsHit: 0, clean: 0, cleanHit: 0 };
+    this.turnStart = 0;
+    this.firstAudioMs = -1;
   }
 }

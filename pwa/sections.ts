@@ -93,6 +93,16 @@ export class Bridge {
     this.send({ t: 'say', sectionId, text });
   }
 
+  /**
+   * Adjunta una imagen: el orquestador la guarda en un temp y responde con
+   * `image-saved` (que llega por el mismo canal genérico `on()`, sin caso
+   * especial en el despacho de entrada). `data` = base64 SIN el prefijo
+   * `data:...;base64,`.
+   */
+  uploadImage(sectionId: string, id: string, name: string, mime: string, data: string): void {
+    this.send({ t: 'upload-image', sectionId, id, name, mime, data });
+  }
+
   /** Modo pty: teclas crudas (o texto dictado + '\r') hacia el PTY. */
   termInput(sectionId: string, data: string): void {
     this.send({ t: 'term-input', sectionId, data });
@@ -101,6 +111,15 @@ export class Bridge {
   /** Modo pty: avisa al server del nuevo tamaño del xterm. */
   termResize(sectionId: string, cols: number, rows: number): void {
     this.send({ t: 'term-resize', sectionId, cols, rows });
+  }
+
+  /**
+   * Modo pty: activa/desactiva la captura total de prosa para el proxy de
+   * limpieza (sigue al toggle `ttsClean` del cliente). Con `full=true` el
+   * extractor del orquestador captura TODO lo que el agente escribe.
+   */
+  setCapture(sectionId: string, full: boolean): void {
+    this.send({ t: 'tts-capture', sectionId, full });
   }
 
   close(sectionId: string): void {

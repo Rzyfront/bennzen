@@ -63,7 +63,7 @@ function defaultStored(): StoredVoice {
     lang: 'es-ES',
     sttApi: { format: 'openai', url: '', key: '', model: 'whisper-1' },
     ttsApi: { format: 'openai', url: '', key: '', model: 'tts-1', voice: 'alloy', speed: 1.3 },
-    ttsClean: { enabled: false, format: 'minimax', url: '', key: '', model: '', prompt: '' },
+    ttsClean: { enabled: false, format: 'minimax', url: '', key: '', model: '', prompt: '', settleMs: 1000, maxMs: 3000 },
   };
 }
 
@@ -258,6 +258,23 @@ bridge.on((m) => {
     }
   } else if (m.t === 'speak') {
     if (m.sectionId === activeId) speak(m.text, true);
+  } else if (m.t === 'image-saved') {
+    // La imagen ya está en disco: `path` es la ruta a inyectar en el prompt.
+    const s = sections.get(m.sectionId);
+    if (!s) return;
+    if (s.kind === 'pty') {
+      // pty: escribe la ruta en el terminal SIN Enter (el usuario sigue escribiendo).
+      bridge.termInput(m.sectionId, m.path + ' ');
+      if (m.sectionId === activeId) vhint.textContent = `🖼 ${m.name}`;
+    } else {
+      // rpc: marca el chip como listo y guarda la ruta para el próximo submit.
+      const att = attachments.get(m.sectionId)?.find((a) => a.id === m.id);
+      if (att) {
+        att.path = m.path;
+        att.status = 'ready';
+      }
+      if (m.sectionId === activeId) renderAttachments();
+    }
   } else if (m.t === 'error') {
     const s = m.sectionId ? sections.get(m.sectionId) : undefined;
     if (s) s.entries.push({ role: 'error', text: m.message });
@@ -296,6 +313,9 @@ function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd:
     render(); // hace visible el contenedor de terminal
     mountTerm(s);
     bridge.create(sectionId, agent, mode, cwd, kind, s.cols ?? 80, s.rows ?? 24);
+    // Captura total del extractor si la limpieza TTS está activa (el proxy la
+    // traduce a lenguaje natural). Con limpieza OFF, filtrado normal.
+    bridge.setCapture(sectionId, voiceCfg.ttsClean.enabled);
   } else {
     bridge.create(sectionId, agent, mode, cwd, kind);
     render();
@@ -466,14 +486,23 @@ function startTalk(): void {
   tts.stop(); // barge-in: corta al agente si estaba hablando
   setOrb('listening');
   talkBtn.classList.add('active');
-  void meter.start().catch(() => {
-    /* micro denegado: seguimos sin halo reactivo */
-  });
+  // Browser STT abre su propio micro (Web Speech, opaco) → el medidor abre el suyo.
+  // API STT abre UN micro y lo comparte con el medidor vía onStream (Fase 7.1): una
+  // sola apertura por gesto, menos latencia y un solo permiso.
+  if (voiceCfg.stt === 'browser') {
+    void meter.start().catch(() => {
+      /* micro denegado: seguimos sin halo reactivo */
+    });
+  }
 
   try {
     stt = startStt(voiceCfg.stt, voiceCfg, {
       onInterim: (t) => (vhint.textContent = `🎙 ${t}`),
       onFinal: (t) => submit(t),
+      onStream: (s) => {
+        // Reutiliza el micro del STT para el halo reactivo (sin 2º getUserMedia).
+        void meter.start(s).catch(() => {});
+      },
       onError: (msg) => {
         vhint.textContent = `⚠️ ${msg}`;
         console.warn('[voz]', msg);
@@ -528,18 +557,27 @@ talkBtn.addEventListener('pointerleave', () => stopTalk());
 talkBtn.addEventListener('pointercancel', () => stopTalk());
 
 textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    const input = e.target as HTMLInputElement;
-    if (input.value.trim()) submit(input.value.trim());
+  if (e.key !== 'Enter') return;
+  const input = e.target as HTMLInputElement;
+  const val = input.value.trim();
+  const hasAttachments = !!activeId && (attachments.get(activeId)?.length ?? 0) > 0;
+  if (!val && !hasAttachments) {
     input.value = '';
+    return;
   }
+  // Solo limpiamos el input si el envío se concretó: si hay subidas en curso,
+  // submit() aborta y devuelve false → conservamos el texto para reintentar.
+  if (submit(val)) input.value = '';
 });
 
-/** Enruta el texto dictado/escrito según el tipo de la sección activa. */
-function submit(text: string): void {
-  if (!activeId) return;
+/**
+ * Enruta el texto dictado/escrito según el tipo de la sección activa.
+ * Devuelve true si envió (para limpiar el input); false si abortó o no hizo nada.
+ */
+function submit(text: string): boolean {
+  if (!activeId) return false;
   const s = sections.get(activeId);
-  if (!s) return;
+  if (!s) return false;
   if (s.kind === 'pty') {
     // La TUI eco-eará el texto en el terminal; mostramos confirmación en la voz.
     vhint.textContent = `↵ enviado: ${text}`;
@@ -548,11 +586,36 @@ function submit(text: string): void {
     // vez de enviar. Mandar el \r aparte = Enter discreto → la TUI sí envía.
     bridge.termInput(s.sectionId, text);
     setTimeout(() => bridge.termInput(s.sectionId, '\r'), 50);
-  } else {
-    pushUser(s.entries, text);
-    bridge.say(activeId, text);
-    render();
+    return true;
   }
+
+  // rpc con adjuntos: inyecta las rutas en el prompt (estrategia "ruta-en-prompt").
+  const list = attachments.get(activeId) ?? [];
+  if (list.length > 0) {
+    if (list.some((a) => a.status === 'uploading')) {
+      // Aún subiendo: avisa y NO envía. El usuario reintenta al terminar.
+      vhint.textContent = '⬆ Subiendo imagen… espera un momento';
+      return false;
+    }
+    const paths = list.filter((a) => a.status === 'ready' && a.path).map((a) => a.path as string);
+    // Al agente va la versión con rutas; al historial, un texto amable.
+    const finalText = text
+      ? [text, ...paths].join('\n')
+      : 'Analiza la imagen adjunta:\n' + paths.join('\n');
+    const displayText = (text || '(imagen)') + ' 🖼×' + paths.length;
+    pushUser(s.entries, displayText);
+    bridge.say(activeId, finalText);
+    attachments.set(activeId, []); // limpia adjuntos y chips
+    renderAttachments();
+    render();
+    return true;
+  }
+
+  // rpc sin adjuntos: comportamiento idéntico al de siempre.
+  pushUser(s.entries, text);
+  bridge.say(activeId, text);
+  render();
+  return true;
 }
 
 // ---- Mute (silenciar voz del agente) ------------------------------------
@@ -561,6 +624,173 @@ muteBtn.addEventListener('click', () => {
   if (muted) tts.stop();
   muteBtn.textContent = muted ? '🔇' : '🔊';
   muteBtn.classList.toggle('active', muted);
+});
+
+// ---- Adjuntos de imagen (arrastrar / pegar / botón 📎) -------------------
+// Estrategia "ruta-en-prompt": la imagen se sube al orquestador (upload-image),
+// que la guarda en un temp y responde con su ruta (image-saved). Esa ruta se
+// INYECTA en el prompt del agente — en rpc va con el texto (say), en pty se
+// escribe en el terminal para que el usuario la complete y envíe.
+interface Attachment {
+  id: string;
+  name: string;
+  mime: string;
+  thumbUrl: string; // data URL para la miniatura <img>
+  path: string | null; // ruta que devuelve el server (null hasta image-saved)
+  status: 'uploading' | 'ready';
+}
+
+// Adjuntos pendientes por sección (clave = sectionId). Solo el compositor rpc
+// muestra chips; en pty la ruta se inyecta directa en el terminal (sin estado).
+const attachments = new Map<string, Attachment[]>();
+function attachmentsOf(sectionId: string): Attachment[] {
+  let list = attachments.get(sectionId);
+  if (!list) attachments.set(sectionId, (list = []));
+  return list;
+}
+
+const ATTACH_MAX = 10 * 1024 * 1024; // 10 MB
+const ATTACH_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const uploadId = (): string =>
+  crypto.randomUUID?.() ?? 'img-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+const attachmentsEl = $('#attachments');
+const attachBtn = $<HTMLButtonElement>('#attach-btn');
+const attachInput = $<HTMLInputElement>('#attach-input');
+const colOut = $('.col-out');
+
+/** Pinta los chips de adjuntos de la sección activa (solo rpc). */
+function renderAttachments(): void {
+  attachmentsEl.innerHTML = '';
+  const active = activeId ? sections.get(activeId) : undefined;
+  const list = activeId ? attachments.get(activeId) : undefined;
+  if (!active || active.kind === 'pty' || !list || list.length === 0) {
+    attachmentsEl.hidden = true;
+    return;
+  }
+  attachmentsEl.hidden = false;
+  const sid = active.sectionId;
+  for (const att of list) {
+    const chip = document.createElement('div');
+    chip.className = `attachment ${att.status}`;
+    chip.title = att.status === 'uploading' ? `Subiendo ${att.name}…` : att.name;
+
+    const img = document.createElement('img');
+    img.className = 'attachment-thumb';
+    img.src = att.thumbUrl;
+    img.alt = att.name;
+
+    const name = document.createElement('span');
+    name.className = 'attachment-name';
+    name.textContent = att.name;
+
+    const del = document.createElement('button');
+    del.className = 'attachment-del';
+    del.textContent = '×';
+    del.title = 'Quitar';
+    del.addEventListener('click', () => {
+      attachments.set(sid, (attachments.get(sid) ?? []).filter((a) => a.id !== att.id));
+      renderAttachments();
+    });
+
+    chip.append(img, name, del);
+    attachmentsEl.appendChild(chip);
+  }
+}
+
+/** Valida, lee y sube cada imagen; enruta según el modo de la sección activa. */
+function addImages(files: FileList | File[]): void {
+  if (!activeId) {
+    vhint.textContent = '⚠️ Crea o elige una sección primero.';
+    return;
+  }
+  const s = sections.get(activeId);
+  if (!s) return;
+  const sid = s.sectionId;
+
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith('image/')) continue;
+    if (!ATTACH_MIME.includes(file.type)) {
+      vhint.textContent = `⚠️ Formato no soportado: ${file.name}`;
+      continue;
+    }
+    if (file.size > ATTACH_MAX) {
+      vhint.textContent = `⚠️ Imagen muy grande (>10 MB): ${file.name}`;
+      continue;
+    }
+
+    const id = uploadId();
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1); // quita "data:...;base64,"
+      if (!base64) return;
+      if (s.kind === 'pty') {
+        // pty: sin chips; la ruta se inyecta en el terminal al llegar image-saved.
+        vhint.textContent = `⬆ Subiendo ${file.name}…`;
+      } else {
+        // rpc: chip con miniatura mientras sube.
+        attachmentsOf(sid).push({
+          id,
+          name: file.name,
+          mime: file.type,
+          thumbUrl: dataUrl,
+          path: null,
+          status: 'uploading',
+        });
+        if (activeId === sid) renderAttachments();
+      }
+      bridge.uploadImage(sid, id, file.name, file.type, base64);
+    };
+    reader.onerror = () => {
+      vhint.textContent = `⚠️ No se pudo leer ${file.name}`;
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+// Botón 📎 → dispara el input de archivo oculto.
+attachBtn.addEventListener('click', () => attachInput.click());
+attachInput.addEventListener('change', () => {
+  if (attachInput.files) addImages(attachInput.files);
+  attachInput.value = ''; // permite re-seleccionar el mismo archivo
+});
+
+// Pegar (Ctrl/Cmd+V): saca imágenes del portapapeles. El texto normal no se toca.
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const imgs: File[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) imgs.push(f);
+    }
+  }
+  if (imgs.length === 0) return; // pegar texto → comportamiento normal
+  e.preventDefault();
+  addImages(imgs);
+});
+
+// Arrastrar y soltar sobre la columna de salida (log rpc o terminal pty).
+const setDragging = (on: boolean): void => {
+  colOut.classList.toggle('dragging', on);
+};
+colOut.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  setDragging(true);
+});
+colOut.addEventListener('dragover', (e) => {
+  e.preventDefault(); // imprescindible para permitir el drop
+  setDragging(true);
+});
+colOut.addEventListener('dragleave', () => setDragging(false));
+colOut.addEventListener('drop', (e) => {
+  e.preventDefault();
+  setDragging(false);
+  const files = e.dataTransfer?.files;
+  if (files && files.length) addImages(files);
 });
 
 // ---- Ajustes de voz (modal + localStorage) -------------------------------
@@ -589,6 +819,8 @@ const el = {
   cleanKey: $<HTMLInputElement>('#clean-key'),
   cleanModel: $<HTMLInputElement>('#clean-model'),
   cleanPrompt: $<HTMLTextAreaElement>('#clean-prompt'),
+  cleanSettle: $<HTMLInputElement>('#clean-settle'),
+  cleanMax: $<HTMLInputElement>('#clean-max'),
 };
 
 /** Muestra los campos de API solo cuando el motor correspondiente es 'api'. */
@@ -629,6 +861,8 @@ function populateModal(): void {
   // el server ya publicó un cleanupPrompt, lo ponemos como valor visible/editable
   // para que el usuario vea el default y pueda editarlo o vaciarlo (vacío = server).
   el.cleanPrompt.value = stored.ttsClean.prompt || (serverVoice.cleanupPrompt || '');
+  el.cleanSettle.value = String(stored.ttsClean.settleMs ?? 1000);
+  el.cleanMax.value = String(stored.ttsClean.maxMs ?? 3000);
   toggleApiFields();
   renderNote();
 }
@@ -660,8 +894,17 @@ function readModal(): StoredVoice {
       key: el.cleanKey.value.trim(),
       model: el.cleanModel.value.trim(),
       prompt: el.cleanPrompt.value.trim(),
+      settleMs: clampInt(el.cleanSettle.value, 200, 5000, 1000),
+      maxMs: clampInt(el.cleanMax.value, 500, 10000, 3000),
     },
   };
+}
+
+/** Entero dentro de [min,max]; `fallback` si no es un número válido. */
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 /** Velocidad TTS válida (0.25–4.0); por defecto 1. */
@@ -754,6 +997,12 @@ $('#settings-save').addEventListener('click', () => {
   stored = next;
   localStorage.setItem(STORE_KEY, JSON.stringify(stored));
   voiceCfg = { ...stored, apiBaseUrl: API_BASE };
+  // Propaga el nuevo modo de captura a cada sección pty viva: con limpieza ON
+  // el extractor del orquestador captura TODO (tablas, código, comandos,
+  // resultados de herramientas); con OFF vuelve al filtrado normal.
+  for (const s of sections.values()) {
+    if (s.kind === 'pty') bridge.setCapture(s.sectionId, next.ttsClean.enabled);
+  }
   // Recrea el TTS con la nueva config (corta lo que estuviera sonando).
   tts.stop();
   tts = createTts(voiceCfg.tts, voiceCfg);
@@ -878,6 +1127,9 @@ function render(): void {
       : 'Sin sección activa.';
     log.scrollTop = log.scrollHeight;
   }
+
+  // Chips de adjuntos de la sección activa (solo rpc; se oculta solo si no aplica).
+  renderAttachments();
 }
 
 render();

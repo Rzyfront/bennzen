@@ -160,6 +160,11 @@ export class PtyRegistry {
     s.extractor.resize(cols, rows);
   }
 
+  /** Ajusta el modo de captura total del extractor (limpieza ON en el cliente). */
+  setCaptureAll(sectionId: string, full: boolean): void {
+    this.sessions.get(sectionId)?.extractor.setCaptureAll(full);
+  }
+
   has(sectionId: string): boolean {
     return this.sessions.has(sectionId);
   }
