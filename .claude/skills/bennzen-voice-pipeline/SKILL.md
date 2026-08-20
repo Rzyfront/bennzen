@@ -152,8 +152,9 @@ no implementados.
 - **Cabeceras HTTP no admiten no-ASCII**: el prompt de limpieza (acentos/ñ) viaja con
   `encodeURIComponent` (cliente) y se decodifica con `decodeURIComponent` (server). Sin
   esto `fetch()` lanza "Invalid value" → silencio total.
-- **`mini`/`ollima` son `claude` + env** (proxies de Claude Code), no binarios; MiniMax
-  usa `MINI_AUTH_TOKEN` como fallback de key para TTS y limpieza minimax.
+- **`mini`/`qwen` son `claude` + env** (proxies de Claude Code), no binarios; MiniMax
+  usa `MINI_AUTH_TOKEN` como fallback de key para TTS y limpieza minimax. `qwen` apunta a
+  Alibaba Bailian y lee su key de `BAILIAN_API_KEY` o del Keychain (`bailian-api`).
 - Puertos: orquestador 4319 (`tsx watch orchestrator/server.ts`), PWA Vite 5180.
 
 ## Verificación mínima al tocar la voz

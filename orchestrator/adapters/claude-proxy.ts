@@ -25,7 +25,7 @@ function permOptions(mode: PermMode): Partial<Options> {
 }
 
 /**
- * Adaptador para los proxies de Claude Code (`mini` → MiniMax, `ollima` → Ollama).
+ * Adaptador para los proxies de Claude Code (`mini` → MiniMax, `qwen` → Qwen/Bailian).
  *
  * No son binarios separados: son el mismo `claude` con variables de entorno que
  * repuntan el endpoint, el token y el mapeo de modelos. Por eso se spawnea el

@@ -46,8 +46,8 @@ function resolveCommand(
     case 'claude':
       return { file: 'claude', args: mode === 'yolo' ? ['--dangerously-skip-permissions'] : [] };
     case 'mini':
-    case 'ollima': {
-      // mini/ollima son `claude` + env (proxies de Claude Code: mismo binario,
+    case 'qwen': {
+      // mini/qwen son `claude` + env (proxies de Claude Code: mismo binario,
       // distinto endpoint/token/modelos). node-pty hace execvp directo, así que
       // resolvemos `claude` (binario real en PATH) y mergeamos el env del proxy
       // sobre process.env. Sin wrappers de shell: un `zsh -ic` contaminaría el

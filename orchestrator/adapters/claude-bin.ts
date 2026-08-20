@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
  * instalación. Reusamos el `claude` ya instalado (CLI autenticado del usuario)
  * vía `pathToClaudeCodeExecutable`. Cacheado tras la primera resolución.
  *
- * Compartido por `ClaudeAdapter` y los proxies (`mini`, `ollima`): todos
+ * Compartido por `ClaudeAdapter` y los proxies (`mini`, `qwen`): todos
  * ejecutan el mismo binario `claude`, solo cambian las variables de entorno.
  */
 let cachedBin: string | null | undefined;

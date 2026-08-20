@@ -3,7 +3,7 @@
 
 export type PermMode = 'yolo' | 'safe-auto' | 'readonly';
 
-export type AgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'ollima';
+export type AgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'qwen';
 
 /**
  * Cómo se ejecuta una sección:

@@ -46,8 +46,8 @@ class AdapterPool {
         return new CodexAdapter();
       case 'mini':
         return new ClaudeProxyAdapter('mini');
-      case 'ollima':
-        return new ClaudeProxyAdapter('ollima');
+      case 'qwen':
+        return new ClaudeProxyAdapter('qwen');
       default: {
         const _exhaustive: never = kind;
         throw new Error(`Agente desconocido: ${String(_exhaustive)}`);
