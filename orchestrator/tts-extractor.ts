@@ -53,6 +53,8 @@ function profileFor(agent: AgentKind): ExtractProfile {
     case 'opencode':
       // Su prosa sale como texto plano sin glifo → modo sin-marca + exclusión de chrome.
       return { assistant: new Set(['●', '•']), speakUnmarked: true };
+    case 'agy':
+      return { assistant: new Set(['●', '•', '⏺', '✦', '✧', '★']), speakUnmarked: false };
     default:
       return { assistant: new Set(['●', '•', '⏺']), speakUnmarked: false }; // mock/bash
   }

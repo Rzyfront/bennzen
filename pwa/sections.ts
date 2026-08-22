@@ -140,6 +140,8 @@ export interface UiSection {
   cwd: string;
   ready: boolean;
   kind: SectionKind;
+  /** Título personalizado asignado por el usuario. */
+  customTitle?: string;
   /** Historial (modo rpc). */
   entries: TranscriptEntry[];
   /** Vista de terminal viva (modo pty), si está montada. */

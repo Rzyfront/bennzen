@@ -18,12 +18,14 @@ import type { AgentKind, PermMode, SectionKind } from '../shared/protocol';
 import claudeLogo from './assets/agents/claude.png';
 import codexLogo from './assets/agents/codex.webp';
 import opencodeLogo from './assets/agents/opencode.png';
+import antigravityLogo from './assets/agents/antigravity-logo.png';
 
 // Logo real por agente (mock no tiene → cae a la inicial). Vite los empaqueta.
 const AGENT_LOGO: Partial<Record<AgentKind, string>> = {
   claude: claudeLogo,
   codex: codexLogo,
   opencode: opencodeLogo,
+  agy: antigravityLogo,
 };
 
 const WS_URL = `ws://${location.hostname}:4319`;
@@ -118,6 +120,40 @@ const textInput = $<HTMLInputElement>('#text');
 const overlay = $('#settings');
 const meter = new MicMeter((lvl) => orb.style.setProperty('--level', String(lvl)));
 
+// ---- Toggle de barras laterales ------------------------------------------
+const sidebarLeft = $('#sidebar-left');
+const colVoice = $('#col-voice');
+const toggleSidebarBtn = $<HTMLButtonElement>('#toggle-sidebar');
+const toggleVoiceBtn = $<HTMLButtonElement>('#toggle-voice');
+
+if (localStorage.getItem('bennzen.sidebar-left-collapsed') === '1') {
+  sidebarLeft.classList.add('collapsed');
+  toggleSidebarBtn.classList.add('active');
+}
+
+if (localStorage.getItem('bennzen.voice-minimized') === '1') {
+  colVoice.classList.add('minimized');
+  toggleVoiceBtn.classList.add('active');
+}
+
+toggleSidebarBtn.addEventListener('click', () => {
+  const isCollapsed = sidebarLeft.classList.toggle('collapsed');
+  toggleSidebarBtn.classList.toggle('active', isCollapsed);
+  localStorage.setItem('bennzen.sidebar-left-collapsed', isCollapsed ? '1' : '0');
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 230);
+});
+
+toggleVoiceBtn.addEventListener('click', () => {
+  const isMinimized = colVoice.classList.toggle('minimized');
+  toggleVoiceBtn.classList.toggle('active', isMinimized);
+  localStorage.setItem('bennzen.voice-minimized', isMinimized ? '1' : '0');
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 230);
+});
+
 // ---- Estado del orbe -----------------------------------------------------
 type OrbState = 'idle' | 'listening' | 'speaking' | 'cleaning';
 let listening = false;
@@ -185,15 +221,77 @@ bridge.onStatus((connected) => {
   statusEl.className = connected ? 'ok' : 'off';
 });
 
+// ---- Persistencia local de títulos y orden de secciones ------------------
+const TITLE_STORAGE_KEY = 'bennzen.section-titles';
+const ORDER_STORAGE_KEY = 'bennzen.section-order';
+
+function loadCustomTitles(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(TITLE_STORAGE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveCustomTitle(sectionId: string, title: string): void {
+  const titles = loadCustomTitles();
+  if (title.trim()) {
+    titles[sectionId] = title.trim();
+  } else {
+    delete titles[sectionId];
+  }
+  localStorage.setItem(TITLE_STORAGE_KEY, JSON.stringify(titles));
+}
+
+function loadSectionOrder(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveSectionOrder(order: string[]): void {
+  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order));
+}
+
+function getOrderedSections(): UiSection[] {
+  const order = loadSectionOrder();
+  const list = [...sections.values()];
+  list.sort((a, b) => {
+    const idxA = order.indexOf(a.sectionId);
+    const idxB = order.indexOf(b.sectionId);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return 0;
+  });
+  return list;
+}
+
+function formatShortPath(rawCwd: string): string {
+  if (!rawCwd || rawCwd === '.') return '.';
+  const clean = rawCwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = clean.split('/').filter(Boolean);
+  if (parts.length === 0) return '/';
+  if (parts.length === 1) return parts[0];
+  return parts.slice(-2).join('/');
+}
+
+let draggedSectionId: string | null = null;
+let editingTitleSectionId: string | null = null;
+
 // ---- Mensajes del orquestador -------------------------------------------
 bridge.on((m) => {
   if (m.t === 'snapshot') {
     // Estado COMPLETO del orquestador → restaura todas las sesiones (tras refresh).
     const incoming = new Set(m.sessions.map((s) => s.sectionId));
+    const customTitles = loadCustomTitles();
     for (const info of m.sessions) {
       const ex = sections.get(info.sectionId);
       if (ex) {
         ex.ready = info.ready;
+        if (customTitles[info.sectionId]) ex.customTitle = customTitles[info.sectionId];
         if (info.kind === 'rpc') ex.entries = info.transcript;
         if (info.kind === 'pty') {
           ex.cols = info.cols;
@@ -216,6 +314,7 @@ bridge.on((m) => {
           cwd: info.cwd,
           ready: info.ready,
           kind: info.kind,
+          customTitle: customTitles[info.sectionId],
           entries: info.transcript ?? [],
           cols: info.cols,
           rows: info.rows,
@@ -433,6 +532,9 @@ function closeSection(sectionId: string): void {
   const s = sections.get(sectionId);
   s?.term?.dispose();
   sections.delete(sectionId);
+  saveCustomTitle(sectionId, '');
+  const order = loadSectionOrder().filter((id) => id !== sectionId);
+  saveSectionOrder(order);
   if (activeId === sectionId) {
     tts.stop();
     activeId = sections.keys().next().value ?? null;
@@ -1040,51 +1142,132 @@ function render(): void {
   const list = $('#sections');
   list.innerHTML = '';
 
-  if (sections.size === 0) {
+  const orderedSections = getOrderedSections();
+
+  if (orderedSections.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'sections-empty';
     empty.textContent = 'Sin secciones. Crea una con ＋.';
     list.appendChild(empty);
   }
 
-  for (const s of sections.values()) {
+  for (const s of orderedSections) {
     const li = document.createElement('li');
     li.className = s.sectionId === activeId ? 'card active' : 'card';
     li.dataset.agent = s.agent; // identidad del agente (hooks/tests); ya no define color
+    li.dataset.sectionId = s.sectionId;
+    li.draggable = true;
 
-    // Avatar = logo real del agente; mock (sin logo) cae a su inicial.
+    // 1. Señita de dragueable (handle)
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'card-drag-handle';
+    dragHandle.textContent = '⋮⋮';
+    dragHandle.title = 'Arrastrar para reordenar';
+
+    // 2. Avatar / Logo (20x20)
     const logo = AGENT_LOGO[s.agent];
+    const displayTitle = s.customTitle || s.agent;
     let avatar: HTMLElement;
     if (logo) {
+      // Logo personalizado (claude, codex, opencode) siempre se mantiene
       const img = document.createElement('img');
       img.className = 'card-avatar';
       img.src = logo;
       img.alt = s.agent;
       avatar = img;
     } else {
+      // Fallback: inicial del nombre (si se renombró, inicial del nuevo nombre)
       const span = document.createElement('span');
       span.className = 'card-avatar card-avatar-fallback';
-      span.textContent = s.agent.slice(0, 1);
+      span.textContent = displayTitle.trim().slice(0, 1).toUpperCase();
       avatar = span;
     }
 
+    // 3. Contenido principal (Título + Subtítulo con modo y ruta reducida)
     const main = document.createElement('span');
     main.className = 'card-main';
-    const title = document.createElement('span');
-    title.className = 'card-title';
-    title.textContent = s.agent;
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'card-title-row';
+
+    if (editingTitleSectionId === s.sectionId) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'card-title-input';
+      input.value = displayTitle;
+      input.addEventListener('click', (e) => e.stopPropagation());
+      input.addEventListener('mousedown', (e) => e.stopPropagation());
+
+      const commit = (newVal: string) => {
+        if (editingTitleSectionId !== s.sectionId) return;
+        editingTitleSectionId = null;
+        const val = newVal.trim();
+        s.customTitle = val && val !== s.agent ? val : undefined;
+        saveCustomTitle(s.sectionId, s.customTitle || '');
+        render();
+      };
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit(input.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          editingTitleSectionId = null;
+          render();
+        }
+      });
+      input.addEventListener('blur', () => commit(input.value));
+      titleRow.appendChild(input);
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+    } else {
+      const title = document.createElement('span');
+      title.className = 'card-title';
+      title.textContent = displayTitle;
+      title.title = 'Doble clic o ✏ para renombrar';
+      title.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        editingTitleSectionId = s.sectionId;
+        render();
+      });
+
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'card-rename-btn';
+      renameBtn.textContent = '✏';
+      renameBtn.title = 'Renombrar sesión';
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        editingTitleSectionId = s.sectionId;
+        render();
+      });
+
+      titleRow.append(title, renameBtn);
+    }
+
     const sub = document.createElement('span');
     sub.className = 'card-sub';
     const kind = document.createElement('span');
     kind.className = 'kind';
     kind.textContent = s.kind === 'pty' ? '⌨ TUI' : '💬 chat';
     sub.append(kind, document.createTextNode(` · ${s.mode}`));
-    main.append(title, sub);
 
+    const pathEl = document.createElement('span');
+    pathEl.className = 'card-path';
+    pathEl.title = `Directorio: ${s.cwd}`;
+    const shortCwd = formatShortPath(s.cwd);
+    pathEl.textContent = shortCwd;
+
+    main.append(titleRow, sub, pathEl);
+
+    // 4. Estado de conexión
     const status = document.createElement('span');
     status.className = s.ready ? 'card-status ready' : 'card-status';
     status.title = s.ready ? 'lista' : 'conectando…';
 
+    // 5. Botón cerrar
     const x = document.createElement('button');
     x.className = 'x';
     x.textContent = '✕';
@@ -1094,12 +1277,75 @@ function render(): void {
       closeSection(s.sectionId);
     });
 
+    // Activar sección al hacer clic
     li.addEventListener('click', () => {
+      if (editingTitleSectionId === s.sectionId) return;
       activeId = s.sectionId;
       render();
     });
 
-    li.append(avatar, main, status, x);
+    // Drag & Drop
+    li.addEventListener('dragstart', (e) => {
+      draggedSectionId = s.sectionId;
+      li.classList.add('dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.setData('text/plain', s.sectionId);
+        e.dataTransfer.effectAllowed = 'move';
+      }
+    });
+
+    li.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!draggedSectionId || draggedSectionId === s.sectionId) return;
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+
+      const rect = li.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        li.classList.add('drag-over-top');
+        li.classList.remove('drag-over-bottom');
+      } else {
+        li.classList.add('drag-over-bottom');
+        li.classList.remove('drag-over-top');
+      }
+    });
+
+    li.addEventListener('dragleave', () => {
+      li.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const fromId = draggedSectionId || e.dataTransfer?.getData('text/plain');
+      const toId = s.sectionId;
+      li.classList.remove('drag-over-top', 'drag-over-bottom');
+
+      if (fromId && fromId !== toId) {
+        const insertAfter = e.clientY >= li.getBoundingClientRect().top + li.getBoundingClientRect().height / 2;
+        const currentOrder = getOrderedSections().map((sec) => sec.sectionId);
+        const fromIdx = currentOrder.indexOf(fromId);
+        if (fromIdx !== -1) currentOrder.splice(fromIdx, 1);
+
+        let toIdx = currentOrder.indexOf(toId);
+        if (toIdx !== -1) {
+          if (insertAfter) toIdx++;
+          currentOrder.splice(toIdx, 0, fromId);
+        } else {
+          currentOrder.push(fromId);
+        }
+        saveSectionOrder(currentOrder);
+        render();
+      }
+    });
+
+    li.addEventListener('dragend', () => {
+      draggedSectionId = null;
+      document.querySelectorAll('#sections .card').forEach((el) => {
+        el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+      });
+    });
+
+    li.append(dragHandle, avatar, main, status, x);
     list.appendChild(li);
   }
 
@@ -1133,3 +1379,4 @@ function render(): void {
 }
 
 render();
+

@@ -16,6 +16,7 @@ const cmd: Record<string, [string, string[]]> = {
   claude: ['claude', ['--dangerously-skip-permissions']],
   codex: ['codex', ['--dangerously-bypass-approvals-and-sandbox']],
   opencode: ['opencode', []],
+  agy: ['agy', ['--dangerously-skip-permissions']],
   mock: ['bash', []],
 };
 const spec = cmd[agent];

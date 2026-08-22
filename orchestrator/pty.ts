@@ -78,6 +78,15 @@ function resolveCommand(
     case 'opencode':
       // La TUI pregunta permisos interactivamente, lo cual es válido en PTY.
       return { file: 'opencode', args: [] };
+    case 'agy':
+      switch (mode) {
+        case 'yolo':
+          return { file: 'agy', args: ['--dangerously-skip-permissions'] };
+        case 'safe-auto':
+          return { file: 'agy', args: ['--mode', 'accept-edits'] };
+        case 'readonly':
+          return { file: 'agy', args: ['--mode', 'plan'] };
+      }
     default: {
       const _exhaustive: never = agent;
       throw new Error(`Agente desconocido: ${String(_exhaustive)}`);

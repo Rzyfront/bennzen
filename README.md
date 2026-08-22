@@ -1,6 +1,6 @@
 # BENNZEN
 
-Cliente de voz delgado sobre agentes CLI (**Claude Code / Codex / OpenCode**).
+Cliente de voz delgado sobre agentes CLI (**Claude Code / Codex / OpenCode / Antigravity agy**).
 Hablas → STT → el agente elegido procesa → su respuesta vuelve como texto → TTS.
 
 La app **no** gestiona el modelo ni la ejecución de herramientas: eso lo hacen los
@@ -89,11 +89,13 @@ node scripts/pty-smoke.mjs                       # PTY + proxy de voz (puerto 43
   `codex exec resume`. Usa tu provider/modelo configurado en `~/.codex`.
 - **OpenCode**: `createOpencode()` lanza un único server; usa el modelo por
   defecto de tu config de OpenCode. `readonly` apaga tools de escritura (best-effort).
+- **Antigravity (`agy`)**: ejecuta `agy -p --output-format stream-json`; el
+  `conversation_id` se reanuda con `--conversation <id>`.
 
 ## Modos de permiso (passthrough)
 
-| Modo        | Claude Agent SDK            | Codex `exec`                          | OpenCode |
-|-------------|-----------------------------|---------------------------------------|----------|
-| `yolo`      | `bypassPermissions`         | `-a never --sandbox danger-full-access` | `permission: allow` |
-| `safe-auto` | `acceptEdits` + allowedTools | `-a never --sandbox workspace-write`  | ask/allow por tool |
-| `readonly`  | `plan`                      | `--sandbox read-only`                 | deny escritura |
+| Modo        | Claude Agent SDK            | Codex `exec`                          | OpenCode            | Antigravity `agy`              |
+|-------------|-----------------------------|---------------------------------------|---------------------|--------------------------------|
+| `yolo`      | `bypassPermissions`         | `-a never --sandbox danger-full-access` | `permission: allow` | `--dangerously-skip-permissions` |
+| `safe-auto` | `acceptEdits` + allowedTools | `-a never --sandbox workspace-write`  | ask/allow por tool  | `--mode accept-edits`          |
+| `readonly`  | `plan`                      | `--sandbox read-only`                 | deny escritura      | `--mode plan`                  |

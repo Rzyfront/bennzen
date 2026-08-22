@@ -5,6 +5,7 @@ import { OpenCodeAdapter } from './adapters/opencode';
 import { ClaudeAdapter } from './adapters/claude';
 import { CodexAdapter } from './adapters/codex';
 import { ClaudeProxyAdapter } from './adapters/claude-proxy';
+import { AgyAdapter } from './adapters/agy';
 
 /** Una sección activa = una sesión de agente con su contexto e historial. */
 export interface Section {
@@ -48,6 +49,8 @@ class AdapterPool {
         return new ClaudeProxyAdapter('mini');
       case 'qwen':
         return new ClaudeProxyAdapter('qwen');
+      case 'agy':
+        return new AgyAdapter();
       default: {
         const _exhaustive: never = kind;
         throw new Error(`Agente desconocido: ${String(_exhaustive)}`);

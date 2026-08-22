@@ -4,7 +4,8 @@
 import { WebSocket } from 'ws';
 
 const [, , agent = 'mock', mode = 'yolo', prompt = 'hola mundo', cwd = '.'] = process.argv;
-const ws = new WebSocket('ws://localhost:4319');
+const port = process.env.PORT || '4319';
+const ws = new WebSocket(`ws://localhost:${port}`);
 const sectionId = `smoke-${agent}`;
 let text = '';
 const TIMEOUT_MS = 60000;
