@@ -107,9 +107,47 @@ let serverVoice = { stt: false, tts: false, lang: 'es-ES', cleanup: false, clean
 let stored = loadStored();
 let voiceCfg: VoiceConfig = { ...stored, apiBaseUrl: API_BASE };
 
-// TTS activo (se recrea al guardar ajustes).
-let tts: Tts = createTts(voiceCfg.tts, voiceCfg);
-let muted = false;
+// ---- Gestión de voz por sección ------------------------------------------
+interface SectionVoice {
+  tts: Tts;
+  speaking: boolean;
+  muted: boolean;
+  level: number;
+}
+const sectionVoices = new Map<string, SectionVoice>();
+const MUTE_STORAGE_KEY = 'bennzen.section-mute';
+
+function loadMutedSections(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(MUTE_STORAGE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveSectionMute(sectionId: string, isMuted: boolean): void {
+  const map = loadMutedSections();
+  if (isMuted) map[sectionId] = true;
+  else delete map[sectionId];
+  localStorage.setItem(MUTE_STORAGE_KEY, JSON.stringify(map));
+}
+
+function getSectionVoice(sectionId: string): SectionVoice {
+  let v = sectionVoices.get(sectionId);
+  if (!v) {
+    const sTts = createTts(voiceCfg.tts, voiceCfg);
+    const mutedMap = loadMutedSections();
+    v = {
+      tts: sTts,
+      speaking: false,
+      muted: !!mutedMap[sectionId],
+      level: 0,
+    };
+    wireSectionTts(sectionId, v);
+    sectionVoices.set(sectionId, v);
+  }
+  return v;
+}
 
 const orb = $('#orb');
 new OrbParticles(orb); // halo de partículas reactivo a la voz (lee clase/--level del orbe)
@@ -163,53 +201,114 @@ function setOrb(state: OrbState): void {
   if (state !== 'listening') orb.style.setProperty('--level', '0');
 }
 
-function wireTtsState(t: Tts): void {
-  t.onStateChange = (speaking) => {
-    if (!listening) setOrb(speaking ? 'speaking' : 'idle');
+function updateCardVoiceState(sectionId: string, v: SectionVoice): void {
+  const card = document.querySelector<HTMLElement>(`#sections .card[data-section-id="${sectionId}"]`);
+  if (!card) return;
+  const isSpeaking = v.speaking && !v.muted;
+  card.classList.toggle('speaking', isSpeaking);
+  card.classList.toggle('muted', v.muted);
+  const flameEl = card.querySelector<HTMLElement>('.card-flame');
+  if (flameEl) {
+    flameEl.classList.toggle('visible', isSpeaking);
+  }
+  const muteBtnEl = card.querySelector<HTMLButtonElement>('.card-mute-btn');
+  if (muteBtnEl) {
+    muteBtnEl.textContent = v.muted ? '🔇' : '🔊';
+    muteBtnEl.title = v.muted ? 'Activar voz en esta sección' : 'Silenciar voz en esta sección';
+    muteBtnEl.classList.toggle('active', v.muted);
+  }
+}
+
+function updateCardVoiceLevel(sectionId: string, lvl: number): void {
+  const card = document.querySelector<HTMLElement>(`#sections .card[data-section-id="${sectionId}"]`);
+  if (card) {
+    card.style.setProperty('--voice-level', String(lvl));
+  }
+}
+
+function updateMainMuteBtn(): void {
+  if (!activeId) {
+    muteBtn.textContent = '🔊';
+    muteBtn.classList.remove('active');
+    muteBtn.title = 'Silenciar voz';
+    return;
+  }
+  const v = getSectionVoice(activeId);
+  muteBtn.textContent = v.muted ? '🔇' : '🔊';
+  muteBtn.classList.toggle('active', v.muted);
+  muteBtn.title = v.muted ? 'Activar voz en la sección activa' : 'Silenciar voz en la sección activa';
+}
+
+function toggleSectionMute(sectionId: string): void {
+  const v = getSectionVoice(sectionId);
+  v.muted = !v.muted;
+  saveSectionMute(sectionId, v.muted);
+  if (v.muted) {
+    v.tts.stop();
+    v.speaking = false;
+  }
+  const sec = sections.get(sectionId);
+  if (sec) {
+    sec.muted = v.muted;
+    sec.speaking = v.speaking && !v.muted;
+  }
+  updateCardVoiceState(sectionId, v);
+  updateMainMuteBtn();
+  if (sectionId === activeId && !listening) {
+    setOrb(v.speaking && !v.muted ? 'speaking' : 'idle');
+    if (v.muted) orb.style.setProperty('--level', '0');
+  }
+}
+
+function wireSectionTts(sectionId: string, v: SectionVoice): void {
+  v.tts.onStateChange = (speaking) => {
+    v.speaking = speaking;
+    const sec = sections.get(sectionId);
+    if (sec) sec.speaking = speaking && !v.muted;
+    updateCardVoiceState(sectionId, v);
+    if (sectionId === activeId && !listening) {
+      setOrb(speaking && !v.muted ? 'speaking' : 'idle');
+    }
   };
-  // Nivel REAL del audio TTS (solo ApiTts) → alimenta --level mientras habla,
-  // igual que MicMeter al escuchar. Así el orbe reacciona al audio del agente.
-  t.onLevel = (lvl) => {
-    if (!listening) orb.style.setProperty('--level', String(lvl));
+
+  v.tts.onLevel = (lvl) => {
+    v.level = lvl;
+    updateCardVoiceLevel(sectionId, lvl);
+    if (sectionId === activeId && !listening) {
+      orb.style.setProperty('--level', String(lvl));
+    }
   };
-  // Limpieza server-side (solo ApiTts con ttsClean.enabled): el proxy limpia el
-  // texto con un LLM antes de sintetizar. Como es invisible en Network, lo
-  // reflejamos en el orbe (estado 'cleaning') y en la pista (vhint).
-  t.onCleaning = (state, info) => {
-    if (listening) return; // no pisar el estado de escucha del usuario
-    if (state === 'start') {
-      setOrb('cleaning');
-      vhint.textContent = '🧹 Limpiando texto…';
-    } else {
-      // 'done': el cleanup terminó y el audio va a sonar YA. Forzamos el orbe a
-      // 'speaking' porque onStateChange(true) se disparó ANTES del 'start' (en
-      // enqueue) y no vuelve a dispararse sin transición → sin esto el orbe se
-      // quedaría en turquesa 'cleaning' toda la reproducción.
-      setOrb('speaking');
-      // Contador breve del ratio de compactación si el proxy expuso las métricas.
-      if (info && info.before > 0) {
-        const pct = Math.round((1 - info.after / info.before) * 100);
-        const sign = pct >= 0 ? '−' : '+';
-        vhint.textContent = `🧹 ${info.before}→${info.after} ${sign}${Math.abs(pct)}%`;
-        // Restaura la pista normal tras unos segundos, solo si nadie escribió algo
-        // más reciente (error, pista de escucha, etc.) — comparamos el texto mostrado.
-        const shown = vhint.textContent;
-        setTimeout(() => { if (vhint.textContent === shown) vhint.textContent = HINT; }, 3500);
+
+  v.tts.onCleaning = (state, info) => {
+    if (sectionId === activeId) {
+      if (listening) return;
+      if (state === 'start') {
+        setOrb('cleaning');
+        vhint.textContent = '🧹 Limpiando texto…';
       } else {
-        vhint.textContent = '🧹 Texto limpiado';
-        const shown = vhint.textContent;
-        setTimeout(() => { if (vhint.textContent === shown) vhint.textContent = HINT; }, 2000);
+        setOrb('speaking');
+        if (info && info.before > 0) {
+          const pct = Math.round((1 - info.after / info.before) * 100);
+          const sign = pct >= 0 ? '−' : '+';
+          vhint.textContent = `🧹 ${info.before}→${info.after} ${sign}${Math.abs(pct)}%`;
+          const shown = vhint.textContent;
+          setTimeout(() => { if (vhint.textContent === shown) vhint.textContent = HINT; }, 3500);
+        } else {
+          vhint.textContent = '🧹 Texto limpiado';
+          const shown = vhint.textContent;
+          setTimeout(() => { if (vhint.textContent === shown) vhint.textContent = HINT; }, 2000);
+        }
       }
     }
   };
 }
-wireTtsState(tts);
 
-/** Habla un texto si la voz no está silenciada. */
-function speak(text: string, andFlush = false): void {
-  if (muted) return;
-  tts.push(text);
-  if (andFlush) tts.flush();
+/** Habla un texto para una sección específica si la voz de esa sección no está silenciada. */
+function speak(sectionId: string, text: string, andFlush = false): void {
+  const v = getSectionVoice(sectionId);
+  if (v.muted) return;
+  v.tts.push(text);
+  if (andFlush) v.tts.flush();
 }
 
 // ---- Conexión ------------------------------------------------------------
@@ -287,10 +386,13 @@ bridge.on((m) => {
     // Estado COMPLETO del orquestador → restaura todas las sesiones (tras refresh).
     const incoming = new Set(m.sessions.map((s) => s.sectionId));
     const customTitles = loadCustomTitles();
+    const mutedMap = loadMutedSections();
     for (const info of m.sessions) {
+      const isMuted = !!mutedMap[info.sectionId];
       const ex = sections.get(info.sectionId);
       if (ex) {
         ex.ready = info.ready;
+        ex.muted = isMuted;
         if (customTitles[info.sectionId]) ex.customTitle = customTitles[info.sectionId];
         if (info.kind === 'rpc') ex.entries = info.transcript;
         if (info.kind === 'pty') {
@@ -314,6 +416,7 @@ bridge.on((m) => {
           cwd: info.cwd,
           ready: info.ready,
           kind: info.kind,
+          muted: isMuted,
           customTitle: customTitles[info.sectionId],
           entries: info.transcript ?? [],
           cols: info.cols,
@@ -326,11 +429,17 @@ bridge.on((m) => {
       if (!incoming.has(id)) {
         sections.get(id)?.term?.dispose();
         sections.delete(id);
+        const v = sectionVoices.get(id);
+        if (v) {
+          v.tts.stop();
+          sectionVoices.delete(id);
+        }
       }
     }
     if (!activeId || !sections.has(activeId)) {
       activeId = sections.keys().next().value ?? null;
     }
+    updateMainMuteBtn();
     render();
   } else if (m.t === 'created') {
     const s = sections.get(m.sectionId);
@@ -340,10 +449,11 @@ bridge.on((m) => {
     const s = sections.get(m.sectionId);
     if (!s) return;
     applyDelta(s.entries, m.delta);
-    if (m.sectionId === activeId) {
-      if (m.delta.type === 'text') speak(m.delta.text);
+    const v = getSectionVoice(m.sectionId);
+    if (!v.muted) {
+      if (m.delta.type === 'text') v.tts.push(m.delta.text);
       // 'done' de rpc = fin de turno real → flush inmediato (salta el debounce).
-      else if (m.delta.type === 'done') tts.flush(true);
+      else if (m.delta.type === 'done') v.tts.flush(true);
     }
     render();
   } else if (m.t === 'term-data') {
@@ -356,7 +466,13 @@ bridge.on((m) => {
       s.pendingTermData = (s.pendingTermData ?? '') + m.data;
     }
   } else if (m.t === 'speak') {
-    if (m.sectionId === activeId) speak(m.text, true);
+    const s = sections.get(m.sectionId);
+    if (!s) return;
+    const v = getSectionVoice(m.sectionId);
+    if (!v.muted) {
+      v.tts.push(m.text);
+      v.tts.flush(true);
+    }
   } else if (m.t === 'image-saved') {
     // La imagen ya está en disco: `path` es la ruta a inyectar en el prompt.
     const s = sections.get(m.sectionId);
@@ -533,12 +649,18 @@ function closeSection(sectionId: string): void {
   s?.term?.dispose();
   sections.delete(sectionId);
   saveCustomTitle(sectionId, '');
+  const v = sectionVoices.get(sectionId);
+  if (v) {
+    v.tts.stop();
+    sectionVoices.delete(sectionId);
+  }
+  saveSectionMute(sectionId, false);
   const order = loadSectionOrder().filter((id) => id !== sectionId);
   saveSectionOrder(order);
   if (activeId === sectionId) {
-    tts.stop();
     activeId = sections.keys().next().value ?? null;
   }
+  updateMainMuteBtn();
   render();
 }
 
@@ -585,7 +707,10 @@ function startTalk(): void {
     return;
   }
   listening = true;
-  tts.stop(); // barge-in: corta al agente si estaba hablando
+  if (activeId) {
+    const v = getSectionVoice(activeId);
+    v.tts.stop(); // barge-in: corta al agente si estaba hablando
+  }
   setOrb('listening');
   talkBtn.classList.add('active');
   // Browser STT abre su propio micro (Web Speech, opaco) → el medidor abre el suyo.
@@ -720,12 +845,10 @@ function submit(text: string): boolean {
   return true;
 }
 
-// ---- Mute (silenciar voz del agente) ------------------------------------
+// ---- Mute (silenciar voz del agente activo) -----------------------------
 muteBtn.addEventListener('click', () => {
-  muted = !muted;
-  if (muted) tts.stop();
-  muteBtn.textContent = muted ? '🔇' : '🔊';
-  muteBtn.classList.toggle('active', muted);
+  if (!activeId) return;
+  toggleSectionMute(activeId);
 });
 
 // ---- Adjuntos de imagen (arrastrar / pegar / botón 📎) -------------------
@@ -1105,10 +1228,13 @@ $('#settings-save').addEventListener('click', () => {
   for (const s of sections.values()) {
     if (s.kind === 'pty') bridge.setCapture(s.sectionId, next.ttsClean.enabled);
   }
-  // Recrea el TTS con la nueva config (corta lo que estuviera sonando).
-  tts.stop();
-  tts = createTts(voiceCfg.tts, voiceCfg);
-  wireTtsState(tts);
+  // Recrea los TTS de todas las secciones con la nueva config (corta lo que estuviera sonando).
+  for (const [sid, v] of sectionVoices.entries()) {
+    v.tts.stop();
+    v.tts = createTts(voiceCfg.tts, voiceCfg);
+    wireSectionTts(sid, v);
+  }
+  updateMainMuteBtn();
   closeSettings();
 });
 
@@ -1152,11 +1278,23 @@ function render(): void {
   }
 
   for (const s of orderedSections) {
+    const v = getSectionVoice(s.sectionId);
+    const isSpeaking = v.speaking && !v.muted;
+    s.muted = v.muted;
+    s.speaking = isSpeaking;
+
     const li = document.createElement('li');
-    li.className = s.sectionId === activeId ? 'card active' : 'card';
+    let cardClass = 'card';
+    if (s.sectionId === activeId) cardClass += ' active';
+    if (isSpeaking) cardClass += ' speaking';
+    if (v.muted) cardClass += ' muted';
+    li.className = cardClass;
     li.dataset.agent = s.agent; // identidad del agente (hooks/tests); ya no define color
     li.dataset.sectionId = s.sectionId;
     li.draggable = true;
+    if (v.level > 0) {
+      li.style.setProperty('--voice-level', String(v.level));
+    }
 
     // 1. Señita de dragueable (handle)
     const dragHandle = document.createElement('span');
@@ -1267,7 +1405,17 @@ function render(): void {
     status.className = s.ready ? 'card-status ready' : 'card-status';
     status.title = s.ready ? 'lista' : 'conectando…';
 
-    // 5. Botón cerrar
+    // 6. Botón Mute por sección (🔊 / 🔇)
+    const muteBtnCard = document.createElement('button');
+    muteBtnCard.className = v.muted ? 'card-mute-btn active' : 'card-mute-btn';
+    muteBtnCard.textContent = v.muted ? '🔇' : '🔊';
+    muteBtnCard.title = v.muted ? 'Activar voz en esta sección' : 'Silenciar voz en esta sección';
+    muteBtnCard.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleSectionMute(s.sectionId);
+    });
+
+    // 7. Botón cerrar
     const x = document.createElement('button');
     x.className = 'x';
     x.textContent = '✕';
@@ -1281,6 +1429,12 @@ function render(): void {
     li.addEventListener('click', () => {
       if (editingTitleSectionId === s.sectionId) return;
       activeId = s.sectionId;
+      const curV = getSectionVoice(s.sectionId);
+      updateMainMuteBtn();
+      if (!listening) {
+        setOrb(curV.speaking && !curV.muted ? 'speaking' : 'idle');
+        orb.style.setProperty('--level', curV.speaking && !curV.muted ? String(curV.level) : '0');
+      }
       render();
     });
 
@@ -1345,7 +1499,7 @@ function render(): void {
       });
     });
 
-    li.append(dragHandle, avatar, main, status, x);
+    li.append(dragHandle, avatar, main, status, muteBtnCard, x);
     list.appendChild(li);
   }
 
@@ -1376,6 +1530,9 @@ function render(): void {
 
   // Chips de adjuntos de la sección activa (solo rpc; se oculta solo si no aplica).
   renderAttachments();
+
+  // Sincroniza el botón de mute principal con la sección activa
+  updateMainMuteBtn();
 }
 
 render();

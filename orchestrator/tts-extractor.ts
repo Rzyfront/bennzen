@@ -54,7 +54,8 @@ function profileFor(agent: AgentKind): ExtractProfile {
       // Su prosa sale como texto plano sin glifo → modo sin-marca + exclusión de chrome.
       return { assistant: new Set(['●', '•']), speakUnmarked: true };
     case 'agy':
-      return { assistant: new Set(['●', '•', '⏺', '✦', '✧', '★']), speakUnmarked: false };
+      // En modo TUI/PTY, agy emite prosa en texto/markdown sin glifo fijo de asistente.
+      return { assistant: new Set(['●', '•', '⏺', '✦', '✧', '★']), speakUnmarked: true };
     default:
       return { assistant: new Set(['●', '•', '⏺']), speakUnmarked: false }; // mock/bash
   }
@@ -73,12 +74,14 @@ const OTHER_MARK = new Set([
 const WORD_CHAR = /[\p{L}\p{N}]/gu;
 /**
  * Mobiliario de la TUI con palabras pero sin valor para TTS (footer, atajos,
- * spinners, banner). Si una línea encaja, no se habla. El timer del spinner
- * («Cooked/Baked/Pondering… for Ns») se caza por el patrón «for Ns», ya que el
- * verbo es aleatorio en claude.
+ * spinners, banners de inicio de CLIs, cabeceras de cuenta/modelo/rutas).
  */
 const NOISE =
-  /(shift\+tab|esc to interrupt|bypass permissions|for agents|to cycle|ctx:\s*\d|\bfor \d+\s*s\b|\(\d+s\)|tips for getting started|welcome back|what's new|release-notes|context left|\/effort|tokens?\b.*\bused|thought:\s*\d|ctrl\+\w|·\s*thinking|\b\d+(\.\d+)?k\b\s*\(\d+%\))/i;
+  /(shift\+tab|esc to interrupt|bypass permissions|for agents|to cycle|ctx:\s*\d|\bfor \d+\s*s\b|\(\d+s\)|tips for getting started|welcome back|what's new|release-notes|context left|\/effort|tokens?\b.*\bused|thought:\s*\d|ctrl\+\w|·\s*thinking|\b\d+(\.\d+)?k\b\s*\(\d+%\)|antigravity\s*(?:cli)?|google\s*ai\s*pro|gemini\s*[\d.]+|claude\s*[\d.]+|opencode|[\w.-]+@[\w.-]+\.[a-z]{2,}|^\s*~[/\w.-]+$|^\s*\/[/\w.-]+$|^\s*model:\s*|^\s*cwd:\s*|^\s*[─═\-_─]{2,}\s*$)/i;
+
+/** Caracteres de arte ASCII / bloques Unicode que forman logos (como la 'A' de Antigravity). */
+const BLOCK_ART = /^[\s\u2580-\u259F\u25A0-\u25FF\u2800-\u28FF\uE000-\uF8FF]+$/;
+
 /** Cuántas líneas de input recientes recordamos para suprimir su eco. */
 const INPUT_RING = 8;
 /**
@@ -138,13 +141,17 @@ export class TerminalExtractor {
 
   /**
    * Acumula líneas de entrada del usuario (teclado/voz) para suprimir su eco.
-   * La PRIMERA entrada "arma" el extractor y siembra lo visible (banner/tips)
-   * como ya-hablado, para que nunca se lea en voz alta.
+   * La PRIMERA entrada "arma" el extractor y siembra todo el buffer inicial
+   * (banner/tips) como ya-hablado, para que nunca se lea en voz alta.
    */
   noteInput(data: string): void {
     if (!this.armed) {
       this.armed = true;
-      for (const line of this.visibleProse()) this.remember(line);
+      const buf = this.term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const raw = buf.getLine(i)?.translateToString(true);
+        if (raw) this.remember(raw);
+      }
     }
     for (const raw of data.split(/[\r\n]+/)) {
       const line = raw.trim();
@@ -248,9 +255,13 @@ export class TerminalExtractor {
   private extract(): void {
     const cur = this.visibleProse();
 
-    // Antes de la 1ª interacción: solo memoriza (banner/tips), no habla.
+    // Antes de la 1ª interacción: solo memoriza todo el buffer inicial (banner/tips), no habla.
     if (!this.armed) {
-      for (const line of cur) this.remember(line);
+      const buf = this.term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const raw = buf.getLine(i)?.translateToString(true);
+        if (raw) this.remember(raw);
+      }
       return;
     }
 
@@ -280,8 +291,23 @@ export class TerminalExtractor {
     // Avisos/errores del CLI (⚠ ✗ ⛔…) → no es prosa del agente, fuera.
     if (WARN_PREFIX.test(line)) return '';
 
+    // Pixel art / logos de bloque Unicode
+    if (BLOCK_ART.test(line)) return '';
+
     const trimmed = line.trim().replace(TUI_GLYPHS, '').trim();
     if (!trimmed) return '';
+
+    // Si la línea es solo caracteres de arte/bloque o separadores
+    if (BLOCK_ART.test(trimmed)) return '';
+
+    // Separadores puros (───, ═══, ----, etc.)
+    if (/^[─═\-_*#~=\s]+$/.test(trimmed)) return '';
+
+    // Rutas de archivo o directorios solos en la línea (e.g. ~/Documents/... o /Users/...)
+    if (/^(?:~|\/)[a-zA-Z0-9_\-./]+$/.test(trimmed)) return '';
+
+    // Emails de cuenta de usuario solos en la línea (e.g. rzyfront@gmail.com)
+    if (/^[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}(?:\s*\(.*?\))?$/.test(trimmed)) return '';
 
     // Tool-call de claude (`Bash(...)`, `Read(...)`, `Update(file)`…): en modo
     // normal no es prosa; en captura total la conservamos (el agente de limpieza

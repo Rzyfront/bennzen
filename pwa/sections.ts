@@ -153,6 +153,10 @@ export interface UiSection {
   pendingTermData?: string;
   /** Scrollback recibido en snapshot, aún no reproducido (modo pty). */
   pendingScrollback?: string;
+  /** Estado de silencio de voz de esta sección. */
+  muted?: boolean;
+  /** Si esta sección está emitiendo voz activamente. */
+  speaking?: boolean;
 }
 
 export function newSectionId(): string {

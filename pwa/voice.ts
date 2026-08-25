@@ -569,6 +569,10 @@ export class BrowserTts implements Tts {
   private buf = '';
   private speaking = false;
   private wasActive = false;
+  // Retiene la referencia de la utterance activa para evitar que el Garbage Collector de V8
+  // la elimine en silencio antes de onend (Chromium bug #338300).
+  private activeUtterance: SpeechSynthesisUtterance | null = null;
+  private watchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private lang: string, private rate = 1) {}
 
@@ -588,7 +592,15 @@ export class BrowserTts implements Tts {
     this.queue = [];
     this.buf = '';
     this.speaking = false;
-    speechSynthesis.cancel();
+    this.activeUtterance = null;
+    if (this.watchTimer) {
+      clearTimeout(this.watchTimer);
+      this.watchTimer = null;
+    }
+    try {
+      speechSynthesis.cancel();
+      if (speechSynthesis.paused) speechSynthesis.resume();
+    } catch {}
     this.notify();
   }
 
@@ -608,16 +620,49 @@ export class BrowserTts implements Tts {
     }
     this.speaking = true;
     this.notify();
+
+    if (this.watchTimer) clearTimeout(this.watchTimer);
+
     const u = new SpeechSynthesisUtterance(next);
+    this.activeUtterance = u;
     u.lang = this.lang;
     u.rate = this.rate; // velocidad de habla (1 = normal)
+
+    let done = false;
     const cont = () => {
+      if (done) return;
+      done = true;
+      if (this.watchTimer) {
+        clearTimeout(this.watchTimer);
+        this.watchTimer = null;
+      }
+      this.activeUtterance = null;
       this.speaking = false;
       this.drain();
     };
+
     u.onend = cont;
-    u.onerror = cont;
-    speechSynthesis.speak(u);
+    u.onerror = (e) => {
+      console.warn('[BrowserTts] error en utterance:', (e as any)?.error ?? e);
+      cont();
+    };
+
+    // Watchdog de seguridad: por si el navegador silencia la utterance sin disparar onend
+    const maxDuration = Math.max(6000, next.length * 300);
+    this.watchTimer = setTimeout(() => {
+      if (!done) {
+        console.warn('[BrowserTts] watchdog timeout');
+        cont();
+      }
+    }, maxDuration);
+
+    try {
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.speak(u);
+    } catch (e) {
+      console.warn('[BrowserTts] error al invocar speechSynthesis.speak:', e);
+      cont();
+    }
   }
 
   private notify(): void {

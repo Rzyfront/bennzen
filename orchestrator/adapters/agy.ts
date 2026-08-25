@@ -6,6 +6,7 @@ interface AgyState {
   cwd: string;
   mode: PermMode;
   conversationId?: string;
+  hasStreamedDelta?: boolean;
 }
 
 /** Flags de ejecución según el modo de permiso */
@@ -44,6 +45,8 @@ export class AgyAdapter implements AgentAdapter {
       yield { type: 'done' };
       return;
     }
+
+    st.hasStreamedDelta = false;
 
     const common = ['-p', text, '--output-format', 'stream-json', ...modeArgs(st.mode)];
     const args = st.conversationId
@@ -130,9 +133,13 @@ export class AgyAdapter implements AgentAdapter {
 
       if (su.step_type === 'agent_response') {
         if (su.text_delta) {
+          st.hasStreamedDelta = true;
           push({ type: 'text', text: su.text_delta });
         } else if (su.state === 'DONE' && su.text) {
-          push({ type: 'text', text: su.text });
+          if (!st.hasStreamedDelta) {
+            push({ type: 'text', text: su.text });
+          }
+          st.hasStreamedDelta = false;
         }
       } else if (su.step_type === 'tool') {
         if (su.state === 'ACTIVE') {
@@ -146,6 +153,8 @@ export class AgyAdapter implements AgentAdapter {
       if (ev.result?.conversation_id) st.conversationId = ev.result.conversation_id;
       if (ev.result?.status === 'ERROR') {
         push({ type: 'error', message: ev.result.error || ev.result.response || 'Error de ejecución en agy' });
+      } else if (!st.hasStreamedDelta && ev.result?.response) {
+        push({ type: 'text', text: ev.result.response });
       }
     } else if (ev.event === 'error') {
       push({ type: 'error', message: ev.error || ev.message || 'Error en agy' });
