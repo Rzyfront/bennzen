@@ -563,6 +563,7 @@ export function segmentText(
 
 // Set global para prevenir Garbage Collection de SpeechSynthesisUtterance en V8 (Chromium)
 const activeUtterances = new Set<SpeechSynthesisUtterance>();
+let currentSpeakingInstance: BrowserTts | null = null;
 
 /** TTS de navegador: cola por frase con SpeechSynthesis robusto contra congelamientos en Chromium. */
 export class BrowserTts implements Tts {
@@ -604,11 +605,14 @@ export class BrowserTts implements Tts {
       activeUtterances.delete(this.activeUtterance);
       this.activeUtterance = null;
     }
-    try {
-      if (typeof speechSynthesis !== 'undefined') {
-        speechSynthesis.cancel();
-      }
-    } catch {}
+    if (currentSpeakingInstance === this) {
+      currentSpeakingInstance = null;
+      try {
+        if (typeof speechSynthesis !== 'undefined') {
+          speechSynthesis.cancel();
+        }
+      } catch {}
+    }
     this.notify();
   }
 
@@ -662,6 +666,7 @@ export class BrowserTts implements Tts {
 
     this.isProcessing = true;
     this.speaking = true;
+    currentSpeakingInstance = this;
     this.notify();
     this.startHeartbeat();
 
@@ -696,6 +701,9 @@ export class BrowserTts implements Tts {
       this.speaking = false;
       this.isProcessing = false;
       if (myGen === this.gen) {
+        if (this.queue.length === 0 && currentSpeakingInstance === this) {
+          currentSpeakingInstance = null;
+        }
         // Pausa breve para permitir que el hardware de audio se libere antes de la siguiente frase
         setTimeout(() => {
           if (myGen === this.gen) this.drain();
