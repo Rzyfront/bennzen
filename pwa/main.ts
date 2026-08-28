@@ -154,8 +154,17 @@ new OrbParticles(orb); // halo de partículas reactivo a la voz (lee clase/--lev
 const vhint = $('#vhint');
 const talkBtn = $<HTMLButtonElement>('#talk');
 const muteBtn = $<HTMLButtonElement>('#mute');
+const readBtn = $<HTMLButtonElement>('#read-text-btn');
 const textInput = $<HTMLInputElement>('#text');
 const overlay = $('#settings');
+const readTextModal = $('#read-text-modal');
+const readTextarea = $<HTMLTextAreaElement>('#read-textarea');
+const readStatsEl = $('#read-stats');
+const readCloseBtn = $<HTMLButtonElement>('#read-close');
+const readCancelBtn = $<HTMLButtonElement>('#read-cancel');
+const readSubmitBtn = $<HTMLButtonElement>('#read-submit');
+const readPasteBtn = $<HTMLButtonElement>('#read-paste-btn');
+const readClearBtn = $<HTMLButtonElement>('#read-clear-btn');
 const meter = new MicMeter((lvl) => orb.style.setProperty('--level', String(lvl)));
 
 // ---- Toggle de barras laterales ------------------------------------------
@@ -266,21 +275,24 @@ function wireSectionTts(sectionId: string, v: SectionVoice): void {
     const sec = sections.get(sectionId);
     if (sec) sec.speaking = speaking && !v.muted;
     updateCardVoiceState(sectionId, v);
-    if (sectionId === activeId && !listening) {
+    if ((sectionId === activeId || !activeId) && !listening) {
       setOrb(speaking && !v.muted ? 'speaking' : 'idle');
+      if (!speaking && vhint.textContent?.startsWith('📖')) {
+        vhint.textContent = HINT;
+      }
     }
   };
 
   v.tts.onLevel = (lvl) => {
     v.level = lvl;
     updateCardVoiceLevel(sectionId, lvl);
-    if (sectionId === activeId && !listening) {
+    if ((sectionId === activeId || !activeId) && !listening) {
       orb.style.setProperty('--level', String(lvl));
     }
   };
 
   v.tts.onCleaning = (state, info) => {
-    if (sectionId === activeId) {
+    if (sectionId === activeId || !activeId) {
       if (listening) return;
       if (state === 'start') {
         setOrb('cleaning');
@@ -701,7 +713,7 @@ let stt: SttSession | null = null;
 
 function startTalk(): void {
   if (listening) return;
-  if (!overlay.hidden || !newSectionOverlay.hidden) return; // un modal abierto → no capturar voz
+  if (!overlay.hidden || !newSectionOverlay.hidden || !readTextModal.hidden) return; // un modal abierto → no capturar voz
   if (!activeId) {
     alert('Crea o elige una sección primero.');
     return;
@@ -1093,7 +1105,7 @@ function populateModal(): void {
 }
 
 /** Lee los campos del modal a un objeto de config. */
-function readModal(): StoredVoice {
+function readSettingsModal(): StoredVoice {
   return {
     stt: el.sttEngine.value as VoiceEngine,
     tts: el.ttsEngine.value as VoiceEngine,
@@ -1206,12 +1218,95 @@ overlay.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (!overlay.hidden) closeSettings();
+  if (!readTextModal.hidden) closeReadModal();
+  else if (!overlay.hidden) closeSettings();
   else if (!newSectionOverlay.hidden) closeNewSection();
 });
 
+// ---- Modal de lectura de texto (sin límite de caracteres) ----------------
+function openReadModal(): void {
+  readTextModal.hidden = false;
+  updateReadStats();
+  setTimeout(() => readTextarea.focus(), 60);
+}
+
+function closeReadModal(): void {
+  readTextModal.hidden = true;
+}
+
+function updateReadStats(): void {
+  const val = readTextarea.value;
+  const chars = val.length;
+  const words = val.trim() ? val.trim().split(/\s+/).length : 0;
+  readStatsEl.textContent = `${chars.toLocaleString()} caracteres · ${words.toLocaleString()} palabras`;
+}
+
+function readTextAloud(text: string): void {
+  const cleanText = text.trim();
+  if (!cleanText) return;
+  const sid = activeId ?? '_reader';
+  const v = getSectionVoice(sid);
+  if (v.muted) {
+    if (activeId) toggleSectionMute(activeId);
+    else v.muted = false;
+  }
+  // Barge-in: detiene cualquier reproducción anterior
+  v.tts.stop();
+  vhint.textContent = '📖 Leyendo texto…';
+  setOrb('speaking');
+
+  // Empuja el texto completo y fuerza flush inmediato
+  v.tts.push(cleanText);
+  v.tts.flush(true);
+}
+
+function submitReadText(): void {
+  const text = readTextarea.value.trim();
+  if (!text) {
+    readTextarea.focus();
+    return;
+  }
+  closeReadModal();
+  readTextAloud(text);
+}
+
+readBtn.addEventListener('click', openReadModal);
+readCloseBtn.addEventListener('click', closeReadModal);
+readCancelBtn.addEventListener('click', closeReadModal);
+readTextModal.addEventListener('click', (e) => {
+  if (e.target === readTextModal) closeReadModal();
+});
+readTextarea.addEventListener('input', updateReadStats);
+readTextarea.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    submitReadText();
+  }
+});
+readSubmitBtn.addEventListener('click', submitReadText);
+
+readPasteBtn.addEventListener('click', async () => {
+  try {
+    const clip = await navigator.clipboard.readText();
+    if (clip) {
+      readTextarea.value = clip;
+      updateReadStats();
+      readTextarea.focus();
+    }
+  } catch (err) {
+    console.warn('No se pudo acceder al portapapeles:', err);
+    readTextarea.focus();
+  }
+});
+
+readClearBtn.addEventListener('click', () => {
+  readTextarea.value = '';
+  updateReadStats();
+  readTextarea.focus();
+});
+
 $('#settings-save').addEventListener('click', () => {
-  const next = readModal();
+  const next = readSettingsModal();
   // Avisa si se eligió API sin config completa y sin fallback en el server.
   if (next.stt === 'api' && !apiReady(next.sttApi) && !serverVoice.stt) {
     if (!confirm('STT por API sin endpoint/key y sin fallback en .env. ¿Guardar igual?')) return;

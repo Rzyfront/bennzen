@@ -577,15 +577,14 @@ export class BrowserTts implements Tts {
   constructor(private lang: string, private rate = 1) {}
 
   push(text: string): void {
+    if (this.buf && !/\s$/.test(this.buf)) this.buf += ' ';
     this.buf += text;
-    this.buf = chunkSentences(this.buf, (s) => this.enqueue(s));
+    this.buf = segmentText(this.buf, 200, false, (s) => this.enqueue(s));
   }
 
   // BrowserTts nunca limpia texto → el debounce no aplica; ignora `immediate`.
   flush(_immediate = false): void {
-    const tail = this.buf.trim();
-    this.buf = '';
-    if (tail) this.enqueue(tail);
+    this.buf = segmentText(this.buf, 200, true, (s) => this.enqueue(s));
   }
 
   stop(): void {

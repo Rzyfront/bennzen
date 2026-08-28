@@ -491,6 +491,14 @@ select, input, .talk, .new-section {
   z-index: 2;
 }
 
+.voice-side-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Panel de voz minimizado (columna de 55px con estrellas en todo el alto) */
 .col-voice.minimized {
   width: 55px !important;
@@ -529,9 +537,16 @@ select, input, .talk, .new-section {
   width: 100%;
   align-items: center;
 }
+.col-voice.minimized .voice-side-btns {
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+}
 .col-voice.minimized .talk {
   width: 42px;
   height: 42px;
+  min-height: 42px;
   border-radius: 50%;
   padding: 0;
   display: grid;
@@ -545,7 +560,8 @@ select, input, .talk, .new-section {
   font-size: 18px;
   line-height: 1;
 }
-.col-voice.minimized .mute {
+.col-voice.minimized .mute,
+.col-voice.minimized .read-btn {
   width: 42px;
   height: 42px;
   border-radius: 50%;
@@ -688,11 +704,38 @@ select, input, .talk, .new-section {
   50% { transform: scale(1.12); }
 }
 
-.talk { cursor: pointer; width: auto; padding: 10px 16px; user-select: none; -webkit-user-select: none; touch-action: none; }
-.talk.active { background: var(--rec); color: #fff; border-color: var(--rec); }
+.talk {
+  cursor: pointer;
+  width: auto;
+  min-height: 84px;
+  padding: 10px 18px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s, color 0.15s;
+}
+.talk:hover {
+  background: #181822;
+  border-color: rgba(199, 210, 254, 0.4);
+}
+.talk.active {
+  background: var(--rec);
+  color: #fff;
+  border-color: var(--rec);
+}
 
-.mute {
-  width: 40px; height: 40px;
+.mute, .read-btn {
+  width: 38px;
+  height: 38px;
   flex: none;
   padding: 0;
   border: 1px solid var(--line);
@@ -700,9 +743,21 @@ select, input, .talk, .new-section {
   background: var(--panel);
   color: var(--fg);
   cursor: pointer;
-  font-size: 16px; line-height: 1;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
 }
-.mute.active { background: var(--rec); border-color: var(--rec); }
+.mute:hover, .read-btn:hover {
+  background: #181822;
+  border-color: var(--accent);
+  transform: scale(1.05);
+}
+.mute:active, .read-btn:active {
+  transform: scale(0.95);
+}
 .mute.active { background: var(--rec); border-color: var(--rec); }
 
 /* Botón fantasma (abrir ajustes, cancelar) */
@@ -864,4 +919,73 @@ select, input, .talk, .new-section {
   border-radius: 4px;
   padding: 1px 6px;
   font: inherit;
+}
+
+/* ---- Modal de lectura de texto ---- */
+.read-modal {
+  width: min(600px, 100%);
+}
+#read-textarea {
+  width: 100%;
+  min-height: 210px;
+  max-height: 52vh;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--fg);
+  padding: 12px 14px;
+  font: 13.5px/1.55 system-ui, -apple-system, sans-serif;
+  box-sizing: border-box;
+  margin-top: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+#read-textarea:focus {
+  outline: none;
+  border-color: var(--speak);
+  box-shadow: 0 0 0 2px rgba(165, 180, 252, 0.2);
+}
+#read-textarea::placeholder {
+  color: #636375;
+}
+.read-stats-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.read-stats-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.read-hint {
+  text-align: left;
+  margin-top: 10px;
+  color: #8c8c9e;
+  line-height: 1.45;
+}
+.modal-foot .read-submit-btn {
+  width: auto;
+  padding: 9px 18px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: filter 0.15s, transform 0.1s;
+}
+.modal-foot .read-submit-btn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+.modal-foot .read-submit-btn:active {
+  transform: translateY(0);
 }

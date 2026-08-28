@@ -63,7 +63,10 @@
           <div id="orb" class="orb idle"><span class="core"></span></div>
           <div class="voice-controls">
             <button id="talk" class="talk" title="Mantener para hablar"><span class="talk-icon">🎤</span> <span class="talk-text">Mantener para hablar</span></button>
-            <button id="mute" class="mute" title="Silenciar / Activar voz del agente">🔊</button>
+            <div class="voice-side-btns">
+              <button id="mute" class="mute" title="Silenciar / Activar voz del agente">🔊</button>
+              <button id="read-text-btn" class="read-btn" title="Leer texto con la voz de Bennzen">📖</button>
+            </div>
           </div>
           <p id="vhint" class="hint">Mantén <kbd>espacio</kbd> para hablar</p>
         </div>
@@ -238,6 +241,36 @@
         <footer class="modal-foot">
           <button id="settings-cancel" class="ghost">Cancelar</button>
           <button id="settings-save">Guardar</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Modal: leer texto con la voz de Bennzen -->
+    <div id="read-text-modal" class="overlay" hidden>
+      <div class="modal read-modal" role="dialog" aria-modal="true" aria-labelledby="read-title">
+        <header class="modal-head">
+          <h2 id="read-title">📖 Leer texto</h2>
+          <button id="read-close" class="x" title="Cerrar">✕</button>
+        </header>
+
+        <div class="modal-body">
+          <label for="read-textarea">Pega o escribe el texto que quieres que Bennzen lea en voz alta:</label>
+          <textarea id="read-textarea" rows="9" placeholder="Pega aquí cualquier texto largo, apuntes, documentos o código... sin límite de caracteres."></textarea>
+
+          <div class="read-stats-bar">
+            <span id="read-stats">0 caracteres · 0 palabras</span>
+            <div class="read-stats-actions">
+              <button id="read-paste-btn" class="ghost mini" type="button" title="Pegar desde el portapapeles">📋 Pegar</button>
+              <button id="read-clear-btn" class="ghost mini" type="button" title="Limpiar área de texto">🗑 Limpiar</button>
+            </div>
+          </div>
+
+          <p class="hint read-hint">💡 <strong>Sin límite de caracteres:</strong> Bennzen segmentará y sintetizará todo el texto en voz alta con audio continuo.</p>
+        </div>
+
+        <footer class="modal-foot">
+          <button id="read-cancel" class="ghost">Cancelar</button>
+          <button id="read-submit" class="read-submit-btn">▶ Leer en voz alta</button>
         </footer>
       </div>
     </div>
