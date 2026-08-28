@@ -561,7 +561,10 @@ export function segmentText(
   return rest;
 }
 
-/** TTS de navegador: cola por frase con SpeechSynthesis. */
+// Set global para prevenir Garbage Collection de SpeechSynthesisUtterance en V8 (Chromium)
+const activeUtterances = new Set<SpeechSynthesisUtterance>();
+
+/** TTS de navegador: cola por frase con SpeechSynthesis robusto contra congelamientos en Chromium. */
 export class BrowserTts implements Tts {
   onStateChange?: (speaking: boolean) => void;
 
@@ -569,10 +572,12 @@ export class BrowserTts implements Tts {
   private buf = '';
   private speaking = false;
   private wasActive = false;
-  // Retiene la referencia de la utterance activa para evitar que el Garbage Collector de V8
-  // la elimine en silencio antes de onend (Chromium bug #338300).
   private activeUtterance: SpeechSynthesisUtterance | null = null;
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private isProcessing = false;
+  private gen = 0;
 
   constructor(private lang: string, private rate = 1) {}
 
@@ -588,17 +593,21 @@ export class BrowserTts implements Tts {
   }
 
   stop(): void {
+    this.gen++;
     this.queue = [];
     this.buf = '';
     this.speaking = false;
-    this.activeUtterance = null;
-    if (this.watchTimer) {
-      clearTimeout(this.watchTimer);
-      this.watchTimer = null;
+    this.isProcessing = false;
+    this.clearTimers();
+    this.stopHeartbeat();
+    if (this.activeUtterance) {
+      activeUtterances.delete(this.activeUtterance);
+      this.activeUtterance = null;
     }
     try {
-      speechSynthesis.cancel();
-      if (speechSynthesis.paused) speechSynthesis.resume();
+      if (typeof speechSynthesis !== 'undefined') {
+        speechSynthesis.cancel();
+      }
     } catch {}
     this.notify();
   }
@@ -607,50 +616,130 @@ export class BrowserTts implements Tts {
     if (!sentence) return;
     this.queue.push(sentence);
     this.notify();
-    this.drain();
+    if (!this.speaking && !this.isProcessing) {
+      this.drain();
+    }
+  }
+
+  private clearTimers(): void {
+    if (this.watchTimer) {
+      clearTimeout(this.watchTimer);
+      this.watchTimer = null;
+    }
+    if (this.startTimer) {
+      clearTimeout(this.startTimer);
+      this.startTimer = null;
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    // Heartbeat: previene que Chrome pause SpeechSynthesis silenciosamente tras 15 segundos
+    this.heartbeatTimer = setInterval(() => {
+      if (typeof speechSynthesis !== 'undefined' && speechSynthesis.paused) {
+        try {
+          speechSynthesis.resume();
+        } catch {}
+      }
+    }, 4000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   private drain(): void {
-    if (this.speaking) return;
+    if (this.speaking || this.isProcessing) return;
     const next = this.queue.shift();
     if (!next) {
+      this.stopHeartbeat();
       this.notify();
       return;
     }
+
+    this.isProcessing = true;
     this.speaking = true;
     this.notify();
+    this.startHeartbeat();
 
-    if (this.watchTimer) clearTimeout(this.watchTimer);
+    const myGen = this.gen;
+    this.clearTimers();
 
     const u = new SpeechSynthesisUtterance(next);
     this.activeUtterance = u;
+    activeUtterances.add(u);
     u.lang = this.lang;
-    u.rate = this.rate; // velocidad de habla (1 = normal)
+    u.rate = this.rate;
+
+    try {
+      const voices = speechSynthesis.getVoices();
+      if (voices && voices.length > 0) {
+        const langPrefix = this.lang.slice(0, 2).toLowerCase();
+        const match = voices.find((v) => v.lang === this.lang) ||
+          voices.find((v) => v.lang.toLowerCase().startsWith(langPrefix));
+        if (match) u.voice = match;
+      }
+    } catch {}
 
     let done = false;
     const cont = () => {
       if (done) return;
       done = true;
-      if (this.watchTimer) {
-        clearTimeout(this.watchTimer);
-        this.watchTimer = null;
+      this.clearTimers();
+      activeUtterances.delete(u);
+      if (this.activeUtterance === u) {
+        this.activeUtterance = null;
       }
-      this.activeUtterance = null;
       this.speaking = false;
-      this.drain();
+      this.isProcessing = false;
+      if (myGen === this.gen) {
+        // Pausa breve para permitir que el hardware de audio se libere antes de la siguiente frase
+        setTimeout(() => {
+          if (myGen === this.gen) this.drain();
+        }, 30);
+      }
     };
 
-    u.onend = cont;
+    u.onend = () => cont();
     u.onerror = (e) => {
       console.warn('[BrowserTts] error en utterance:', (e as any)?.error ?? e);
       cont();
     };
 
-    // Watchdog de seguridad: por si el navegador silencia la utterance sin disparar onend
-    const maxDuration = Math.max(6000, next.length * 300);
+    // Watchdog de inicio: si en 1.5s no comenzó (bug tras cancel()), fuerza resume() o avanza
+    this.startTimer = setTimeout(() => {
+      if (done || myGen !== this.gen) return;
+      if (typeof speechSynthesis !== 'undefined') {
+        if (speechSynthesis.paused) {
+          try {
+            speechSynthesis.resume();
+          } catch {}
+        }
+        // Si no está hablando después de 2.5s, recupera inmediatamente
+        setTimeout(() => {
+          if (!done && myGen === this.gen && !speechSynthesis.speaking) {
+            console.warn('[BrowserTts] utterance no inició; avanzando');
+            cont();
+          }
+        }, 1000);
+      }
+    }, 1500);
+
+    u.onstart = () => {
+      if (this.startTimer) {
+        clearTimeout(this.startTimer);
+        this.startTimer = null;
+      }
+    };
+
+    // Watchdog de fin: tiempo realista basado en longitud (mín 5s, máx 25s por frase de 200 caracteres)
+    const maxDuration = Math.max(5000, Math.ceil(next.length * 150));
     this.watchTimer = setTimeout(() => {
       if (!done) {
-        console.warn('[BrowserTts] watchdog timeout');
+        console.warn('[BrowserTts] watchdog timeout superado');
         cont();
       }
     }, maxDuration);
@@ -659,6 +748,7 @@ export class BrowserTts implements Tts {
       if (speechSynthesis.paused) speechSynthesis.resume();
       speechSynthesis.speak(u);
     } catch (e) {
+      this.clearTimers();
       console.warn('[BrowserTts] error al invocar speechSynthesis.speak:', e);
       cont();
     }

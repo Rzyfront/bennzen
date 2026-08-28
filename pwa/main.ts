@@ -1224,7 +1224,17 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---- Modal de lectura de texto (sin límite de caracteres) ----------------
+let readingTargetSectionId: string | null = null;
+
 function openReadModal(): void {
+  if (!activeId) {
+    alert('Crea o selecciona una sección primero.');
+    return;
+  }
+  readingTargetSectionId = activeId;
+  const s = sections.get(activeId);
+  const title = s?.customTitle || s?.agent || 'sección activa';
+  $<HTMLElement>('#read-title').textContent = `📖 Leer texto (${title})`;
   readTextModal.hidden = false;
   updateReadStats();
   setTimeout(() => readTextarea.focus(), 60);
@@ -1241,23 +1251,25 @@ function updateReadStats(): void {
   readStatsEl.textContent = `${chars.toLocaleString()} caracteres · ${words.toLocaleString()} palabras`;
 }
 
-function readTextAloud(text: string): void {
+function readTextAloud(sectionId: string, text: string): void {
   const cleanText = text.trim();
   if (!cleanText) return;
-  const sid = activeId ?? '_reader';
-  const v = getSectionVoice(sid);
+  const v = getSectionVoice(sectionId);
   if (v.muted) {
-    if (activeId) toggleSectionMute(activeId);
-    else v.muted = false;
+    toggleSectionMute(sectionId);
   }
-  // Barge-in: detiene cualquier reproducción anterior
+  // Barge-in en esa sección
   v.tts.stop();
-  vhint.textContent = '📖 Leyendo texto…';
-  setOrb('speaking');
+  if (sectionId === activeId) {
+    vhint.textContent = '📖 Leyendo texto…';
+    setOrb('speaking');
+  }
 
-  // Empuja el texto completo y fuerza flush inmediato
-  v.tts.push(cleanText);
-  v.tts.flush(true);
+  // Dejamos un tick para que el motor de audio asiente la cancelación previa
+  setTimeout(() => {
+    v.tts.push(cleanText);
+    v.tts.flush(true);
+  }, 40);
 }
 
 function submitReadText(): void {
@@ -1266,8 +1278,13 @@ function submitReadText(): void {
     readTextarea.focus();
     return;
   }
+  const targetId = readingTargetSectionId || activeId;
+  if (!targetId) {
+    alert('No hay una sección seleccionada.');
+    return;
+  }
   closeReadModal();
-  readTextAloud(text);
+  readTextAloud(targetId, text);
 }
 
 readBtn.addEventListener('click', openReadModal);
@@ -1529,6 +1546,11 @@ function render(): void {
       if (!listening) {
         setOrb(curV.speaking && !curV.muted ? 'speaking' : 'idle');
         orb.style.setProperty('--level', curV.speaking && !curV.muted ? String(curV.level) : '0');
+        if (curV.speaking && !curV.muted) {
+          vhint.textContent = '📖 Leyendo texto…';
+        } else {
+          vhint.textContent = HINT;
+        }
       }
       render();
     });
