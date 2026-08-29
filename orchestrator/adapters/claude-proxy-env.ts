@@ -68,6 +68,7 @@ export function proxyEnv(proxy: ClaudeProxy): { env: Record<string, string> } | 
         env: {
           ANTHROPIC_BASE_URL: 'https://api.minimax.io/anthropic',
           ANTHROPIC_AUTH_TOKEN: token,
+          ANTHROPIC_API_KEY: '',
           CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000',
           ANTHROPIC_MODEL: 'MiniMax-M3[1m]',
           ANTHROPIC_DEFAULT_SONNET_MODEL: 'MiniMax-M2.7-highspeed',

@@ -3,7 +3,27 @@
 
 export type PermMode = 'yolo' | 'safe-auto' | 'readonly';
 
-export type AgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'qwen' | 'agy';
+export type BuiltinAgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'qwen' | 'agy';
+export type AgentKind = BuiltinAgentKind | `router:${string}` | (string & {});
+
+/** Configuración de un Router personalizado de Claude Code. */
+export interface RouterConfig {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  opusModel?: string;
+  sonnetModel?: string;
+  haikuModel?: string;
+  autoCompactWindow?: string;
+  createdAt?: number;
+}
+
+export interface RouterTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+}
 
 /**
  * Cómo se ejecuta una sección:
@@ -88,3 +108,12 @@ export type ServerMsg =
   // el prompt; `id` casa con el upload-image que la originó.
   | { t: 'image-saved'; sectionId: string; id: string; path: string; name: string }
   | { t: 'error'; sectionId?: string; message: string };
+
+/** Configuración de un Proyecto / Directorio guardado. */
+export interface ProjectConfig {
+  id: string; // slug único
+  name: string; // Nombre amigable (ej. "Bennzen Core", "Frontend Web")
+  path: string; // Ruta absoluta del directorio
+  tag?: string; // Etiqueta opcional (ej. "Fullstack", "Rust", "Python")
+  createdAt?: number;
+}

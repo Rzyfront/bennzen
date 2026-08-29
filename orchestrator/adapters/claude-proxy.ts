@@ -1,8 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentKind, AgentAdapter, CreateSessionOpts, Delta, PermMode } from './types';
+import type { AgentKind, AgentAdapter, CreateSessionOpts, Delta, PermMode, RouterConfig } from './types';
 import { resolveClaudeBin } from './claude-bin';
 import { proxyEnv, type ClaudeProxy } from './claude-proxy-env';
+import { getRouter, buildRouterEnv } from '../routers';
 
 interface ProxyState {
   cwd: string;
@@ -24,8 +25,12 @@ function permOptions(mode: PermMode): Partial<Options> {
   }
 }
 
+export type ClaudeProxyTarget = ClaudeProxy | RouterConfig;
+
 /**
- * Adaptador para los proxies de Claude Code (`mini` → MiniMax, `qwen` → Qwen/Bailian).
+ * Adaptador para los proxies y routers de Claude Code:
+ * - Proxies nativos (`mini` → MiniMax, `qwen` → Qwen/Bailian).
+ * - Routers personalizados (OpenRouter, DeepSeek, LiteLLM, etc.) creados desde la UI.
  *
  * No son binarios separados: son el mismo `claude` con variables de entorno que
  * repuntan el endpoint, el token y el mapeo de modelos. Por eso se spawnea el
@@ -39,17 +44,18 @@ function permOptions(mode: PermMode): Partial<Options> {
  */
 export class ClaudeProxyAdapter implements AgentAdapter {
   readonly kind: AgentKind;
-  private proxy: ClaudeProxy;
+  private target: ClaudeProxyTarget;
   private state = new Map<string, ProxyState>();
   private counter = 0;
 
-  constructor(proxy: ClaudeProxy) {
-    this.proxy = proxy;
-    this.kind = proxy;
+  constructor(target: ClaudeProxyTarget) {
+    this.target = target;
+    this.kind = typeof target === 'string' ? target : (target.id as AgentKind);
   }
 
   async createSession(opts: CreateSessionOpts): Promise<{ sessionId: string }> {
-    const handle = `${this.proxy}-${++this.counter}`;
+    const prefix = typeof this.target === 'string' ? this.target : this.target.id;
+    const handle = `${prefix}-${++this.counter}`;
     this.state.set(handle, { cwd: opts.cwd, mode: opts.mode });
     return { sessionId: handle };
   }
@@ -57,13 +63,24 @@ export class ClaudeProxyAdapter implements AgentAdapter {
   async *send(handle: string, text: string): AsyncIterable<Delta> {
     const st = this.state.get(handle);
     if (!st) {
-      yield { type: 'error', message: `Sesión ${this.proxy} inexistente` };
+      yield { type: 'error', message: `Sesión inexistente: ${handle}` };
       yield { type: 'done' };
       return;
     }
 
-    // El env del proxy puede fallar (p.ej. mini sin MINI_AUTH_TOKEN en .env).
-    const envResult = proxyEnv(this.proxy);
+    // El env del proxy/router puede fallar o resolverse
+    let envResult: { env: Record<string, string> } | { error: string };
+    if (typeof this.target === 'string') {
+      envResult = proxyEnv(this.target);
+    } else {
+      // Obtenemos la versión más reciente del router por si fue editado
+      const fresh = getRouter(this.target.id) || this.target;
+      if (!fresh.baseUrl || !fresh.apiKey) {
+        envResult = { error: `Router '${fresh.name}' incompleto: falta Base URL o API Key.` };
+      } else {
+        envResult = { env: buildRouterEnv(fresh) };
+      }
+    }
     if ('error' in envResult) {
       yield { type: 'error', message: envResult.error };
       yield { type: 'done' };

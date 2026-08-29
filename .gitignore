@@ -7,3 +7,5 @@ dist-pwa/
 # .env.example SÍ se commitea (plantilla sin secretos). La regla .env.* arriba
 # la ignoraría; la re-incluimos explícitamente.
 !.env.example
+.routers.json
+.projects.json

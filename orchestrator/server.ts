@@ -3,6 +3,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { SessionRegistry } from './sessions';
 import { PtyRegistry } from './pty';
 import { handleVoiceHttp } from './voice-proxy';
+import { handleRoutersHttp } from './routers';
+import { handleProjectsHttp } from './projects';
 import { saveImage, cleanupSection, cleanupAllUploads } from './uploads';
 import { applyDelta, pushUser } from '../shared/transcript';
 import type { ClientMsg, ServerMsg } from '../shared/protocol';
@@ -21,11 +23,17 @@ const PWA_URL = process.env.PWA_URL ?? 'http://localhost:5180';
 
 const registry = new SessionRegistry();
 
-// El proxy de voz vive en el mismo servidor HTTP que el WS (mismo origen → sin
-// CORS para la PWA). Las rutas /api/* las atiende el proxy. Este proceso es
-// backend (API + WebSocket): NO sirve la app. Un GET de navegador a otra ruta
-// se redirige a la PWA para evitar el "Not Found" seco.
-const httpServer = http.createServer((req, res) => {
+// El proxy de voz, routers y proyectos viven en el mismo servidor HTTP que el WS (mismo origen → sin
+// CORS para la PWA). Las rutas /api/* las atiende el módulo correspondiente.
+const httpServer = http.createServer(async (req, res) => {
+  if (req.url?.startsWith('/api/routers')) {
+    const handled = await handleRoutersHttp(req, res);
+    if (handled) return;
+  }
+  if (req.url?.startsWith('/api/projects') || req.url?.startsWith('/api/fs/')) {
+    const handled = await handleProjectsHttp(req, res);
+    if (handled) return;
+  }
   if (req.url?.startsWith('/api/')) {
     void handleVoiceHttp(req, res);
     return;

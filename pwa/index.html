@@ -35,9 +35,21 @@
 
     <main>
       <aside id="sidebar-left">
-        <button id="new-section" class="new-section">＋ Nueva sección</button>
+        <button id="new-section" class="new-section">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>Nueva sección</span>
+        </button>
         <ul id="sections"></ul>
-        <button id="open-settings" class="ghost settings-btn">⚙ Ajustes de voz</button>
+        <button id="open-settings" class="ghost settings-btn" title="Ajustes de Bennzen">
+          <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <span>Ajustes</span>
+        </button>
       </aside>
 
       <section class="panel">
@@ -51,7 +63,11 @@
             <!-- Fila de adjuntos pendientes (chips con miniatura), solo modo rpc -->
             <div id="attachments" class="attachments" hidden></div>
             <div class="bar-row">
-              <button id="attach-btn" class="attach-btn" title="Adjuntar imagen (PNG, JPG, GIF, WebP)">📎</button>
+              <button id="attach-btn" class="attach-btn" title="Adjuntar imagen (PNG, JPG, GIF, WebP)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                </svg>
+              </button>
               <input id="text" type="text" placeholder="…o escribe y Enter" />
               <input id="attach-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
             </div>
@@ -62,10 +78,30 @@
         <div class="col col-voice" id="col-voice">
           <div id="orb" class="orb idle"><span class="core"></span></div>
           <div class="voice-controls">
-            <button id="talk" class="talk" title="Mantener para hablar"><span class="talk-icon">🎤</span> <span class="talk-text">Mantener para hablar</span></button>
+            <button id="talk" class="talk" title="Mantener para hablar">
+              <span class="talk-icon">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="22"></line>
+                </svg>
+              </span>
+              <span class="talk-text">Mantener para hablar</span>
+            </button>
             <div class="voice-side-btns">
-              <button id="mute" class="mute" title="Silenciar / Activar voz del agente">🔊</button>
-              <button id="read-text-btn" class="read-btn" title="Leer texto con la voz de Bennzen">📖</button>
+              <button id="mute" class="mute" title="Silenciar / Activar voz del agente">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                </svg>
+              </button>
+              <button id="read-text-btn" class="read-btn" title="Leer texto con la voz de Bennzen">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+                </svg>
+              </button>
             </div>
           </div>
           <p id="vhint" class="hint">Mantén <kbd>espacio</kbd> para hablar</p>
@@ -73,174 +109,501 @@
       </section>
     </main>
 
-    <!-- Modal: crear nueva sección -->
+    <!-- Modal: crear nueva sección (Modal LG 2 columnas) -->
     <div id="new-section-modal" class="overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ns-title">
+      <div class="modal modal-lg ns-dialog" role="dialog" aria-modal="true" aria-labelledby="ns-title">
         <header class="modal-head">
-          <h2 id="ns-title">Nueva sección</h2>
+          <h2 id="ns-title">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Nueva Sección
+          </h2>
           <button id="ns-close" class="x" title="Cerrar">✕</button>
         </header>
-        <div class="modal-body">
-          <section class="profiles">
-            <div class="profiles-head">
-              <span>Perfiles</span>
-              <button id="ns-save-profile" class="ghost mini" title="Guardar la configuración de abajo como perfil">💾 Guardar actual</button>
-            </div>
-            <ul id="profiles-list" class="profiles-list"></ul>
-          </section>
-          <div class="profiles-sep"><span>o configura manualmente</span></div>
 
-          <label>Agente
-            <select id="agent">
-              <option value="mock">mock (eco)</option>
-              <option value="opencode">opencode</option>
-              <option value="claude">claude</option>
-              <option value="codex">codex</option>
-              <option value="mini">mini</option>
-              <option value="qwen">qwen</option>
-              <option value="agy">agy (Antigravity)</option>
-            </select>
-          </label>
-          <label>Modo
-            <select id="mode">
-              <option value="safe-auto">safe-auto</option>
-              <option value="yolo">yolo</option>
-              <option value="readonly">readonly</option>
-            </select>
-          </label>
-          <label>Tipo
-            <select id="kind">
-              <option value="rpc">Texto + Voz</option>
-              <option value="pty">Terminal + Voz (TUI)</option>
-            </select>
-          </label>
-          <label>Directorio (cwd)
-            <input id="cwd" type="text" placeholder="." />
-          </label>
+        <div class="modal-body ns-body">
+          <!-- Columna Izquierda: Configuración de la nueva sesión -->
+          <div class="ns-left">
+            <h3 class="ns-subtitle">Configurar Sesión</h3>
+
+            <label>Agente
+              <select id="agent">
+                <!-- Se llena dinámicamente con updateAgentSelect() -->
+                <option value="mock">mock (eco)</option>
+                <option value="opencode">opencode</option>
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+                <option value="mini">mini</option>
+                <option value="qwen">qwen</option>
+                <option value="agy">agy (Antigravity)</option>
+              </select>
+            </label>
+
+            <div class="form-row-2">
+              <label>Modo
+                <select id="mode">
+                  <option value="safe-auto">safe-auto</option>
+                  <option value="yolo">yolo</option>
+                  <option value="readonly">readonly</option>
+                </select>
+              </label>
+              <label>Tipo
+                <select id="kind">
+                  <option value="rpc">Texto + Voz (Chat)</option>
+                  <option value="pty">Terminal + Voz (TUI)</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="ns-project-group">
+              <div class="ns-project-head">
+                <label for="ns-project">Proyecto / Carpeta</label>
+                <button id="ns-btn-quick-project" class="ghost mini" type="button" title="Vincular una nueva carpeta como proyecto guardado">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  <span>Vincular Proyecto</span>
+                </button>
+              </div>
+
+              <select id="ns-project">
+                <!-- Se llena dinámicamente con los proyectos guardados -->
+              </select>
+
+              <!-- Mini formulario desplegable para vincular proyecto al vuelo -->
+              <div id="ns-quick-project-box" class="ns-quick-project-box" hidden>
+                <div class="quick-proj-inputs">
+                  <input id="ns-quick-name" type="text" placeholder="Nombre (ej. Frontend Web)" />
+                  <div class="quick-proj-path-row">
+                    <input id="ns-quick-path" type="text" placeholder="Ruta (ej. /Users/mi/repo o .)" />
+                    <button id="ns-quick-picker" class="ghost mini" type="button" title="Abrir explorador de carpetas del sistema (Finder / Explorer)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                      </svg>
+                      <span>Examinar…</span>
+                    </button>
+                  </div>
+                  <div class="quick-proj-btns">
+                    <button id="ns-quick-save" class="primary-btn mini" type="button">Guardar</button>
+                    <button id="ns-quick-cancel" class="ghost mini" type="button">Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="ns-left-actions">
+              <button id="ns-create" class="primary-btn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                <span>Crear Sección</span>
+              </button>
+              <button id="ns-save-profile" class="ghost" type="button" title="Guardar esta configuración para lanzar con 1 clic">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                <span>Guardar Perfil</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Columna Derecha: Perfiles Guardados (1 Clic) -->
+          <div class="ns-right">
+            <div class="profiles-head">
+              <h3 class="ns-subtitle">Perfiles Rápidos (1 Clic)</h3>
+            </div>
+            <p class="profiles-desc">Haz clic en cualquier perfil para iniciar la sesión de inmediato.</p>
+            <ul id="profiles-list" class="profiles-list"></ul>
+          </div>
         </div>
-        <footer class="modal-foot">
-          <button id="ns-cancel" class="ghost">Cancelar</button>
-          <button id="ns-create">＋ Crear sección</button>
+
+        <footer class="modal-foot ns-foot">
+          <button id="ns-cancel" class="ghost" type="button">Cerrar</button>
         </footer>
       </div>
     </div>
 
-    <!-- Modal de ajustes de voz (config en localStorage) -->
+    <!-- Modal Unificado de Ajustes (Routers + Proyectos + Voz) -->
     <div id="settings" class="overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <header class="modal-head">
-          <h2 id="settings-title">Ajustes de voz</h2>
+      <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="modal-head settings-head">
+          <div class="settings-head-left">
+            <h2 id="settings-title">Ajustes</h2>
+            <div class="settings-nav-tabs">
+              <button id="tab-btn-routers" class="settings-tab-btn active" type="button">
+                <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                  <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                  <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                  <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                </svg>
+                <span>Routers & Modelos</span>
+              </button>
+              <button id="tab-btn-projects" class="settings-tab-btn" type="button">
+                <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span>Proyectos & Carpetas</span>
+              </button>
+              <button id="tab-btn-voice" class="settings-tab-btn" type="button">
+                <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="22"></line>
+                </svg>
+                <span>Voz</span>
+              </button>
+            </div>
+          </div>
           <button id="settings-close" class="x" title="Cerrar">✕</button>
         </header>
 
-        <div class="modal-body">
-          <fieldset class="vgroup">
-            <legend>🎙 Reconocimiento (STT)</legend>
-            <label>Motor
-              <select id="stt-engine">
-                <option value="browser">Navegador (Web Speech)</option>
-                <option value="api">API</option>
-              </select>
-            </label>
-            <div class="api-fields" id="stt-api">
-              <label>Proveedor
-                <select id="stt-provider">
-                  <option value="openai">OpenAI</option>
-                  <option value="groq">Groq</option>
-                  <option value="generic">Genérico</option>
-                </select>
-              </label>
-              <label>Endpoint
-                <input id="stt-url" type="text" placeholder="https://api.openai.com/v1/audio/transcriptions" />
-              </label>
-              <label>API key
-                <input id="stt-key" type="password" placeholder="sk-…" autocomplete="off" />
-              </label>
-              <label>Modelo
-                <input id="stt-model" type="text" placeholder="whisper-1" />
-              </label>
-            </div>
-          </fieldset>
+        <div class="modal-body settings-modal-body">
+          <!-- Pestaña 1: Routers & Modelos -->
+          <div id="tab-pane-routers" class="settings-tab-pane">
+            <div class="routers-body">
+              <div class="routers-sidebar">
+                <div class="routers-sidebar-head">
+                  <span>Mis Routers</span>
+                  <button id="router-btn-new" class="ghost mini" type="button" title="Crear un nuevo router">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Nuevo</span>
+                  </button>
+                </div>
+                <ul id="routers-list" class="routers-list"></ul>
+              </div>
 
-          <fieldset class="vgroup">
-            <legend>🔊 Voz (TTS)</legend>
-            <label>Motor
-              <select id="tts-engine">
-                <option value="browser">Navegador (SpeechSynthesis)</option>
-                <option value="api">API</option>
-              </select>
-            </label>
-            <div class="api-fields" id="tts-api">
-              <label>Proveedor
-                <select id="tts-provider">
-                  <option value="openai">OpenAI</option>
-                  <option value="minimax">MiniMax</option>
-                  <option value="generic">Genérico</option>
-                </select>
-              </label>
-              <label>Endpoint
-                <input id="tts-url" type="text" placeholder="https://api.openai.com/v1/audio/speech" />
-              </label>
-              <label>API key
-                <input id="tts-key" type="password" placeholder="sk-…" autocomplete="off" />
-              </label>
-              <label>Modelo
-                <input id="tts-model" type="text" placeholder="tts-1" />
-              </label>
-              <label>Voz
-                <input id="tts-voice" type="text" placeholder="alloy" />
-              </label>
-              <label>Velocidad (1 = normal · más alto = más rápido)
-                <input id="tts-speed" type="number" min="0.25" max="4" step="0.1" placeholder="1.3" />
-              </label>
-            </div>
-          </fieldset>
+              <div class="routers-form-container">
+                <form id="router-form" class="router-form" onsubmit="return false;">
+                  <input type="hidden" id="router-id" />
+                  
+                  <div class="form-row-2">
+                    <label>Nombre del Agente
+                      <input id="router-name" type="text" placeholder="ej. DeepSeek V3" required />
+                    </label>
+                    <label>Slug / ID
+                      <input id="router-slug" type="text" placeholder="ej. deepseek-v3" />
+                    </label>
+                  </div>
 
-          <fieldset class="vgroup">
-            <legend>🧹 Limpieza de texto (opcional)</legend>
-            <label class="row"><input id="clean-enabled" type="checkbox"> Activar limpieza con LLM</label>
-            <div class="api-fields" id="clean-api" hidden>
-              <label>Proveedor
-                <select id="clean-provider">
-                  <option value="minimax">MiniMax (rápido)</option>
-                  <option value="openai">OpenAI-compatible (OpenRouter, Groq, Ollama…)</option>
+                  <label>API Base URL (Anthropic-compatible)
+                    <input id="router-base-url" type="text" placeholder="https://api.deepseek.com/anthropic" required />
+                  </label>
+
+                  <label>API Key / Auth Token
+                    <input id="router-api-key" type="password" placeholder="sk-…" autocomplete="off" required />
+                  </label>
+
+                  <div class="vgroup router-models-group">
+                    <legend>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+                        <path d="M12 8V4H8"></path>
+                        <rect width="16" height="12" x="4" y="8" rx="2"></rect>
+                        <path d="M2 14h2"></path>
+                        <path d="M20 14h2"></path>
+                        <path d="M15 13v2"></path>
+                        <path d="M9 13v2"></path>
+                      </svg>
+                      Mapeo de Modelos (opcionales)
+                    </legend>
+                    <label>Reemplazo Opus (Principal / Razonamiento)
+                      <input id="router-model-opus" type="text" placeholder="ej. deepseek-reasoner o MiniMax-M3[1m]" />
+                    </label>
+                    <label>Reemplazo Sonnet (Rápido / Default)
+                      <input id="router-model-sonnet" type="text" placeholder="ej. deepseek-chat o deepseek-v4-flash[1m]" />
+                    </label>
+                    <label>Reemplazo Haiku (Ligero)
+                      <input id="router-model-haiku" type="text" placeholder="ej. deepseek-chat" />
+                    </label>
+                    <label>Ventana de Contexto (Auto-compact)
+                      <input id="router-auto-compact" type="text" placeholder="500000" />
+                    </label>
+                  </div>
+
+                  <div id="router-test-feedback" class="router-feedback" hidden></div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pestaña 2: Proyectos & Carpetas -->
+          <div id="tab-pane-projects" class="settings-tab-pane" hidden>
+            <div class="routers-body">
+              <div class="routers-sidebar">
+                <div class="routers-sidebar-head">
+                  <span>Mis Proyectos</span>
+                  <button id="project-btn-new" class="ghost mini" type="button" title="Registrar un nuevo proyecto">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Nuevo</span>
+                  </button>
+                </div>
+                <ul id="projects-list" class="routers-list"></ul>
+              </div>
+
+              <div class="routers-form-container">
+                <form id="project-form" class="router-form" onsubmit="return false;">
+                  <input type="hidden" id="project-id" />
+                  
+                  <div class="form-row-2">
+                    <label>Nombre del Proyecto
+                      <input id="project-name" type="text" placeholder="ej. Backend API" required />
+                    </label>
+                    <label>Tag / Categoría (opcional)
+                      <input id="project-tag" type="text" placeholder="ej. Fullstack, Rust, Python" />
+                    </label>
+                  </div>
+
+                  <label>Ruta del Directorio (Absoluta o relativa)
+                    <input id="project-path" type="text" placeholder="/Users/usuario/workspace/mi-proyecto" required />
+                  </label>
+
+                  <!-- Explorador de carpetas -->
+                  <div class="project-dir-helper">
+                    <div class="project-dir-helper-btns">
+                      <button id="project-btn-picker" class="ghost mini" type="button" title="Abrir explorador de carpetas del sistema (Finder / Explorer)">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        <span>Explorador del Sistema…</span>
+                      </button>
+                      <button id="project-btn-browse" class="ghost mini" type="button" title="Explorar subdirectorios de la ruta">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <line x1="8" y1="6" x2="21" y2="6"></line>
+                          <line x1="8" y1="12" x2="21" y2="12"></line>
+                          <line x1="8" y1="18" x2="21" y2="18"></line>
+                          <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                          <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                          <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                        </svg>
+                        <span>Subcarpetas</span>
+                      </button>
+                    </div>
+                    <div id="project-dir-chips" class="project-dir-chips" hidden></div>
+                  </div>
+
+                  <div id="project-feedback" class="router-feedback" hidden></div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pestaña 3: Voz -->
+          <div id="tab-pane-voice" class="settings-tab-pane" hidden>
+            <fieldset class="vgroup">
+              <legend>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="22"></line>
+                </svg>
+                Reconocimiento (STT)
+              </legend>
+              <label>Motor
+                <select id="stt-engine">
+                  <option value="browser">Navegador (Web Speech)</option>
+                  <option value="api">API</option>
                 </select>
               </label>
-              <label>Endpoint (base OpenAI-compatible)
-                <input id="clean-url" type="text" placeholder="https://api.minimax.io/v1/text/chatcompletion_v2" />
-              </label>
-              <label>API key
-                <input id="clean-key" type="password" placeholder="sk-…" autocomplete="off" />
-              </label>
-              <label>Modelo
-                <input id="clean-model" type="text" placeholder="anthropic/claude-3.5-haiku" />
-              </label>
-              <label>Prompt (vacío = default del server)
-                <textarea id="clean-prompt" rows="6" placeholder="Se carga del servidor al abrir el modal…"></textarea>
-              </label>
-              <details class="vadvanced">
-                <summary>Tiempos (avanzado)</summary>
-                <label>Asentamiento — settle (ms)
-                  <input id="clean-settle" type="number" min="200" max="5000" step="100" placeholder="1000" />
+              <div class="api-fields" id="stt-api">
+                <label>Proveedor
+                  <select id="stt-provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="groq">Groq</option>
+                    <option value="generic">Genérico</option>
+                  </select>
                 </label>
-                <label>Techo — max (ms)
-                  <input id="clean-max" type="number" min="500" max="10000" step="100" placeholder="3000" />
+                <label>Endpoint
+                  <input id="stt-url" type="text" placeholder="https://api.openai.com/v1/audio/transcriptions" />
                 </label>
-              </details>
-            </div>
-          </fieldset>
+                <label>API key
+                  <input id="stt-key" type="password" placeholder="sk-…" autocomplete="off" />
+                </label>
+                <label>Modelo
+                  <input id="stt-model" type="text" placeholder="whisper-1" />
+                </label>
+              </div>
+            </fieldset>
 
-          <label>Idioma
-            <input id="voice-lang" type="text" placeholder="es-ES" />
-          </label>
+            <fieldset class="vgroup">
+              <legend>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                </svg>
+                Voz (TTS)
+              </legend>
+              <label>Motor
+                <select id="tts-engine">
+                  <option value="browser">Navegador (SpeechSynthesis)</option>
+                  <option value="api">API</option>
+                </select>
+              </label>
+              <div class="api-fields" id="tts-api">
+                <label>Proveedor
+                  <select id="tts-provider">
+                    <option value="openai">OpenAI</option>
+                    <option value="minimax">MiniMax</option>
+                    <option value="generic">Genérico</option>
+                  </select>
+                </label>
+                <label>Endpoint
+                  <input id="tts-url" type="text" placeholder="https://api.openai.com/v1/audio/speech" />
+                </label>
+                <label>API key
+                  <input id="tts-key" type="password" placeholder="sk-…" autocomplete="off" />
+                </label>
+                <label>Modelo
+                  <input id="tts-model" type="text" placeholder="tts-1" />
+                </label>
+                <label>Voz
+                  <input id="tts-voice" type="text" placeholder="alloy" />
+                </label>
+                <label>Velocidad (1 = normal · más alto = más rápido)
+                  <input id="tts-speed" type="number" min="0.25" max="4" step="0.1" placeholder="1.3" />
+                </label>
+              </div>
+            </fieldset>
 
-          <p id="voice-config-note" class="hint"></p>
-          <p class="hint">🔒 Se guarda en este navegador (localStorage). El <code>.env</code> del servidor actúa de fallback.</p>
+            <fieldset class="vgroup">
+              <legend>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+                  <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"></path>
+                  <path d="m14 7 3 3"></path>
+                  <path d="M5 6v4"></path>
+                  <path d="M19 14v4"></path>
+                  <path d="M10 2v2"></path>
+                  <path d="M7 8H3"></path>
+                  <path d="M21 16h-4"></path>
+                  <path d="M11 3H9"></path>
+                </svg>
+                Limpieza de texto (opcional)
+              </legend>
+              <label class="row"><input id="clean-enabled" type="checkbox"> Activar limpieza con LLM</label>
+              <div class="api-fields" id="clean-api" hidden>
+                <label>Proveedor
+                  <select id="clean-provider">
+                    <option value="minimax">MiniMax (rápido)</option>
+                    <option value="openai">OpenAI-compatible (OpenRouter, Groq, Ollama…)</option>
+                  </select>
+                </label>
+                <label>Endpoint (base OpenAI-compatible)
+                  <input id="clean-url" type="text" placeholder="https://api.minimax.io/v1/text/chatcompletion_v2" />
+                </label>
+                <label>API key
+                  <input id="clean-key" type="password" placeholder="sk-…" autocomplete="off" />
+                </label>
+                <label>Modelo
+                  <input id="clean-model" type="text" placeholder="anthropic/claude-3.5-haiku" />
+                </label>
+                <label>Prompt (vacío = default del server)
+                  <textarea id="clean-prompt" rows="6" placeholder="Se carga del servidor al abrir el modal…"></textarea>
+                </label>
+                <details class="vadvanced">
+                  <summary>Tiempos (avanzado)</summary>
+                  <label>Asentamiento — settle (ms)
+                    <input id="clean-settle" type="number" min="200" max="5000" step="100" placeholder="1000" />
+                  </label>
+                  <label>Techo — max (ms)
+                    <input id="clean-max" type="number" min="500" max="10000" step="100" placeholder="3000" />
+                  </label>
+                </details>
+              </div>
+            </fieldset>
+
+            <label>Idioma
+              <input id="voice-lang" type="text" placeholder="es-ES" />
+            </label>
+
+            <p id="voice-config-note" class="hint"></p>
+            <p class="hint">🔒 Se guarda en este navegador (localStorage). El <code>.env</code> del servidor actúa de fallback.</p>
+          </div>
         </div>
 
-        <footer class="modal-foot">
-          <button id="settings-cancel" class="ghost">Cancelar</button>
-          <button id="settings-save">Guardar</button>
+        <footer class="modal-foot settings-foot">
+          <!-- Footer contextual: Routers -->
+          <div id="footer-routers" class="foot-section">
+            <div class="foot-left">
+              <button id="router-btn-test" class="ghost test-btn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <span>Probar conexión</span>
+              </button>
+              <button id="router-btn-delete" class="ghost del-btn" type="button" hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18"></path>
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                </svg>
+                <span>Eliminar</span>
+              </button>
+            </div>
+            <div class="foot-right">
+              <button id="settings-cancel-routers" class="ghost" type="button">Cerrar</button>
+              <button id="router-btn-save" class="primary-btn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                <span>Guardar Router</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Footer contextual: Proyectos -->
+          <div id="footer-projects" class="foot-section" hidden>
+            <div class="foot-left">
+              <button id="project-btn-delete" class="ghost del-btn" type="button" hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18"></path>
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                </svg>
+                <span>Eliminar</span>
+              </button>
+            </div>
+            <div class="foot-right">
+              <button id="settings-cancel-projects" class="ghost" type="button">Cerrar</button>
+              <button id="project-btn-save" class="primary-btn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                <span>Guardar Proyecto</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Footer contextual: Voz -->
+          <div id="footer-voice" class="foot-section" hidden>
+            <div class="foot-left"></div>
+            <div class="foot-right">
+              <button id="settings-cancel" class="ghost" type="button">Cancelar</button>
+              <button id="settings-save" class="primary-btn" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                  <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                  <polyline points="7 3 7 8 15 8"></polyline>
+                </svg>
+                <span>Guardar Ajustes de Voz</span>
+              </button>
+            </div>
+          </div>
         </footer>
       </div>
     </div>
@@ -249,7 +612,13 @@
     <div id="read-text-modal" class="overlay" hidden>
       <div class="modal read-modal" role="dialog" aria-modal="true" aria-labelledby="read-title">
         <header class="modal-head">
-          <h2 id="read-title">📖 Leer texto</h2>
+          <h2 id="read-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+            </svg>
+            Leer texto
+          </h2>
           <button id="read-close" class="x" title="Cerrar">✕</button>
         </header>
 
@@ -260,8 +629,21 @@
           <div class="read-stats-bar">
             <span id="read-stats">0 caracteres · 0 palabras</span>
             <div class="read-stats-actions">
-              <button id="read-paste-btn" class="ghost mini" type="button" title="Pegar desde el portapapeles">📋 Pegar</button>
-              <button id="read-clear-btn" class="ghost mini" type="button" title="Limpiar área de texto">🗑 Limpiar</button>
+              <button id="read-paste-btn" class="ghost mini" type="button" title="Pegar desde el portapapeles">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                  <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                </svg>
+                <span>Pegar</span>
+              </button>
+              <button id="read-clear-btn" class="ghost mini" type="button" title="Limpiar área de texto">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18"></path>
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                </svg>
+                <span>Limpiar</span>
+              </button>
             </div>
           </div>
 
@@ -270,7 +652,37 @@
 
         <footer class="modal-foot">
           <button id="read-cancel" class="ghost">Cancelar</button>
-          <button id="read-submit" class="read-submit-btn">▶ Leer en voz alta</button>
+          <button id="read-submit" class="read-submit-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            <span>Leer en voz alta</span>
+          </button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Modal de Diálogo Personalizado (Prompt / Alert / Confirm) -->
+    <div id="ui-dialog-overlay" class="overlay ui-dialog-overlay" hidden>
+      <div class="modal ui-dialog" role="dialog" aria-modal="true" aria-labelledby="ui-dialog-title">
+        <header class="modal-head">
+          <h2 id="ui-dialog-title">
+            <svg id="ui-dialog-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="legend-icon"></svg>
+            <span id="ui-dialog-title-text">Confirmar</span>
+          </h2>
+          <button id="ui-dialog-close" class="x" title="Cerrar">✕</button>
+        </header>
+
+        <div class="modal-body ui-dialog-body">
+          <p id="ui-dialog-message" class="ui-dialog-message"></p>
+          <div id="ui-dialog-input-container" class="ui-dialog-input-container" hidden>
+            <input id="ui-dialog-input" type="text" autocomplete="off" />
+          </div>
+        </div>
+
+        <footer class="modal-foot ui-dialog-foot">
+          <button id="ui-dialog-cancel" class="ghost" type="button">Cancelar</button>
+          <button id="ui-dialog-confirm" class="primary-btn" type="button">Aceptar</button>
         </footer>
       </div>
     </div>

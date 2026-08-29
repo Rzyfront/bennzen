@@ -1,6 +1,6 @@
-import type { PermMode, AgentKind, Delta } from '../../shared/protocol';
+import type { PermMode, AgentKind, Delta, RouterConfig, RouterTestResult } from '../../shared/protocol';
 
-export type { PermMode, AgentKind, Delta };
+export type { PermMode, AgentKind, Delta, RouterConfig, RouterTestResult };
 
 export interface CreateSessionOpts {
   /** Directorio de trabajo donde el agente operará. */

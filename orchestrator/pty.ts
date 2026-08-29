@@ -12,6 +12,7 @@ import type { IPty } from 'node-pty';
 import type { AgentKind, PermMode, SessionInfo } from '../shared/protocol';
 import { TerminalExtractor } from './tts-extractor';
 import { proxyEnv } from './adapters/claude-proxy-env';
+import { getRouter, buildRouterEnv } from './routers';
 
 /** Tope de scrollback retenido para reproducir en xterm al reconectar. */
 const SCROLLBACK_MAX = 200_000;
@@ -52,7 +53,7 @@ function resolveCommand(
       // resolvemos `claude` (binario real en PATH) y mergeamos el env del proxy
       // sobre process.env. Sin wrappers de shell: un `zsh -ic` contaminaría el
       // terminal y, en modo rpc, rompería el protocolo stdio del SDK.
-      const r = proxyEnv(agent);
+      const r = proxyEnv(agent as 'mini' | 'qwen');
       if ('error' in r) {
         // Falta un token obligatorio (p.ej. mini sin MINI_AUTH_TOKEN en .env):
         // nada útil que ejecutar. Lo imprimimos en el terminal y dejamos que el
@@ -88,8 +89,18 @@ function resolveCommand(
           return { file: 'agy', args: ['--mode', 'plan'] };
       }
     default: {
-      const _exhaustive: never = agent;
-      throw new Error(`Agente desconocido: ${String(_exhaustive)}`);
+      const router = getRouter(agent);
+      if (router) {
+        if (!router.baseUrl || !router.apiKey) {
+          return { file: 'echo', args: [`⚠️ Router '${router.name}' incompleto: falta Base URL o API Key.`] };
+        }
+        return {
+          file: 'claude',
+          args: mode === 'yolo' ? ['--dangerously-skip-permissions'] : [],
+          env: buildRouterEnv(router),
+        };
+      }
+      throw new Error(`Agente desconocido: ${String(agent)}`);
     }
   }
 }

@@ -14,11 +14,23 @@ import {
   type CleanSettings,
 } from './voice';
 import { applyDelta, pushUser, formatEntry } from '../shared/transcript';
-import type { AgentKind, PermMode, SectionKind } from '../shared/protocol';
+import type { AgentKind, PermMode, SectionKind, RouterConfig, RouterTestResult, ProjectConfig } from '../shared/protocol';
 import claudeLogo from './assets/agents/claude.png';
 import codexLogo from './assets/agents/codex.webp';
 import opencodeLogo from './assets/agents/opencode.png';
 import antigravityLogo from './assets/agents/antigravity-logo.png';
+
+// Plantillas SVG vectoriales para estados de audio y edición (cero emojis por defecto)
+const SVG_SPEAKER_ON = `<svg class="icon-speaker" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
+const SVG_SPEAKER_MUTED = `<svg class="icon-speaker-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
+const SVG_EDIT = `<svg class="icon-edit" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>`;
+
+function updateMuteButton(el: HTMLElement, isMuted: boolean): void {
+  el.innerHTML = isMuted ? SVG_SPEAKER_MUTED : SVG_SPEAKER_ON;
+  el.classList.toggle('muted', isMuted);
+  el.classList.toggle('active', isMuted);
+  el.title = isMuted ? 'Activar voz' : 'Silenciar voz';
+}
 
 // Logo real por agente (mock no tiene → cae a la inicial). Vite los empaqueta.
 const AGENT_LOGO: Partial<Record<AgentKind, string>> = {
@@ -37,6 +49,137 @@ const $ = <T extends HTMLElement>(sel: string): T => {
   if (!el) throw new Error(`No existe ${sel}`);
   return el;
 };
+
+// ---- Sistema de Diálogos Personalizados (Prompt / Alert / Confirm) --------
+interface DialogOptions {
+  title?: string;
+  message?: string;
+  icon?: 'prompt' | 'alert' | 'confirm' | 'danger' | 'success' | 'error' | 'info';
+  confirmText?: string;
+  cancelText?: string;
+  danger?: boolean;
+}
+
+interface PromptOptions extends DialogOptions {
+  defaultValue?: string;
+  placeholder?: string;
+}
+
+const dialogOverlay = $('#ui-dialog-overlay');
+const dialogTitleText = $('#ui-dialog-title-text');
+const dialogIcon = $('#ui-dialog-icon');
+const dialogMessage = $('#ui-dialog-message');
+const dialogInputContainer = $('#ui-dialog-input-container');
+const dialogInput = $<HTMLInputElement>('#ui-dialog-input');
+const dialogCancelBtn = $<HTMLButtonElement>('#ui-dialog-cancel');
+const dialogConfirmBtn = $<HTMLButtonElement>('#ui-dialog-confirm');
+const dialogCloseBtn = $<HTMLButtonElement>('#ui-dialog-close');
+
+let currentDialogResolve: ((val: any) => void) | null = null;
+
+function closeUiDialog(resolvedValue: any): void {
+  dialogOverlay.hidden = true;
+  if (currentDialogResolve) {
+    const resolve = currentDialogResolve;
+    currentDialogResolve = null;
+    resolve(resolvedValue);
+  }
+}
+
+dialogCloseBtn.addEventListener('click', () => closeUiDialog(null));
+dialogCancelBtn.addEventListener('click', () => closeUiDialog(null));
+dialogOverlay.addEventListener('click', (e) => {
+  if (e.target === dialogOverlay) closeUiDialog(null);
+});
+
+function showCustomDialog(type: 'prompt' | 'alert' | 'confirm', opts: PromptOptions): Promise<any> {
+  return new Promise((resolve) => {
+    currentDialogResolve = resolve;
+
+    dialogTitleText.textContent = opts.title || (type === 'prompt' ? 'Ingresar nombre' : type === 'alert' ? 'Aviso' : 'Confirmación');
+    
+    if (opts.icon === 'error' || opts.danger) {
+      dialogIcon.innerHTML = `<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>`;
+      dialogIcon.style.color = '#f87171';
+    } else if (opts.icon === 'success') {
+      dialogIcon.innerHTML = `<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>`;
+      dialogIcon.style.color = '#4ade80';
+    } else if (type === 'prompt') {
+      dialogIcon.innerHTML = `<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline>`;
+      dialogIcon.style.color = 'var(--accent)';
+    } else {
+      dialogIcon.innerHTML = `<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>`;
+      dialogIcon.style.color = 'var(--accent)';
+    }
+
+    if (opts.message) {
+      dialogMessage.textContent = opts.message;
+      dialogMessage.hidden = false;
+    } else {
+      dialogMessage.hidden = true;
+    }
+
+    if (type === 'prompt') {
+      dialogInputContainer.hidden = false;
+      dialogInput.value = opts.defaultValue || '';
+      dialogInput.placeholder = opts.placeholder || '';
+    } else {
+      dialogInputContainer.hidden = true;
+    }
+
+    dialogConfirmBtn.textContent = opts.confirmText || (type === 'prompt' ? 'Guardar' : 'Aceptar');
+    dialogCancelBtn.textContent = opts.cancelText || 'Cancelar';
+    dialogCancelBtn.hidden = type === 'alert';
+
+    if (opts.danger) {
+      dialogConfirmBtn.style.background = 'var(--rec)';
+      dialogConfirmBtn.style.color = '#fff';
+    } else {
+      dialogConfirmBtn.style.background = '';
+      dialogConfirmBtn.style.color = '';
+    }
+
+    dialogConfirmBtn.onclick = () => {
+      if (type === 'prompt') {
+        const val = dialogInput.value.trim();
+        closeUiDialog(val || null);
+      } else if (type === 'confirm') {
+        closeUiDialog(true);
+      } else {
+        closeUiDialog(true);
+      }
+    };
+
+    dialogInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        dialogConfirmBtn.click();
+      }
+    };
+
+    dialogOverlay.hidden = false;
+    if (type === 'prompt') {
+      setTimeout(() => {
+        dialogInput.focus();
+        dialogInput.select();
+      }, 50);
+    } else {
+      setTimeout(() => dialogConfirmBtn.focus(), 50);
+    }
+  });
+}
+
+function uiPrompt(title: string, defaultValue: string = '', placeholder: string = ''): Promise<string | null> {
+  return showCustomDialog('prompt', { title, defaultValue, placeholder });
+}
+
+function uiAlert(message: string, title: string = 'Aviso', icon?: 'info' | 'error' | 'success'): Promise<void> {
+  return showCustomDialog('alert', { title, message, icon: icon || 'info' });
+}
+
+function uiConfirm(message: string, title: string = 'Confirmar acción', danger: boolean = false): Promise<boolean> {
+  return showCustomDialog('confirm', { title, message, danger, icon: danger ? 'danger' : 'confirm' });
+}
 
 const sections = new Map<string, UiSection>();
 let activeId: string | null = null;
@@ -222,9 +365,8 @@ function updateCardVoiceState(sectionId: string, v: SectionVoice): void {
   }
   const muteBtnEl = card.querySelector<HTMLButtonElement>('.card-mute-btn');
   if (muteBtnEl) {
-    muteBtnEl.textContent = v.muted ? '🔇' : '🔊';
+    updateMuteButton(muteBtnEl, v.muted);
     muteBtnEl.title = v.muted ? 'Activar voz en esta sección' : 'Silenciar voz en esta sección';
-    muteBtnEl.classList.toggle('active', v.muted);
   }
 }
 
@@ -237,14 +379,12 @@ function updateCardVoiceLevel(sectionId: string, lvl: number): void {
 
 function updateMainMuteBtn(): void {
   if (!activeId) {
-    muteBtn.textContent = '🔊';
-    muteBtn.classList.remove('active');
+    updateMuteButton(muteBtn, false);
     muteBtn.title = 'Silenciar voz';
     return;
   }
   const v = getSectionVoice(activeId);
-  muteBtn.textContent = v.muted ? '🔇' : '🔊';
-  muteBtn.classList.toggle('active', v.muted);
+  updateMuteButton(muteBtn, v.muted);
   muteBtn.title = v.muted ? 'Activar voz en la sección activa' : 'Silenciar voz en la sección activa';
 }
 
@@ -510,10 +650,654 @@ bridge.on((m) => {
   }
 });
 
+// ---- Routers & Agentes Claude Code (CRUD + Test + Sincronización) --------
+let availableRouters: RouterConfig[] = [];
+let selectedRouterId: string | null = null;
+
+const routersListEl = $('#routers-list');
+const routerNewBtn = $('#router-btn-new');
+const routerSaveBtn = $('#router-btn-save');
+const routerTestBtn = $<HTMLButtonElement>('#router-btn-test');
+const routerDelBtn = $('#router-btn-delete');
+const routerFeedback = $('#router-test-feedback');
+
+const routerInputs = {
+  id: $<HTMLInputElement>('#router-id'),
+  name: $<HTMLInputElement>('#router-name'),
+  slug: $<HTMLInputElement>('#router-slug'),
+  baseUrl: $<HTMLInputElement>('#router-base-url'),
+  apiKey: $<HTMLInputElement>('#router-api-key'),
+  opus: $<HTMLInputElement>('#router-model-opus'),
+  sonnet: $<HTMLInputElement>('#router-model-sonnet'),
+  haiku: $<HTMLInputElement>('#router-model-haiku'),
+  autoCompact: $<HTMLInputElement>('#router-auto-compact'),
+};
+
+function updateAgentSelect(): void {
+  const agentSelect = $<HTMLSelectElement>('#agent');
+  const currentVal = agentSelect.value;
+  agentSelect.innerHTML = `
+    <optgroup label="Agentes Nativos">
+      <option value="mock">mock (eco)</option>
+      <option value="opencode">opencode</option>
+      <option value="claude">claude</option>
+      <option value="codex">codex</option>
+      <option value="mini">mini (MiniMax M3)</option>
+      <option value="qwen">qwen (Bailian Qwen)</option>
+      <option value="agy">agy (Antigravity)</option>
+    </optgroup>
+  `;
+  if (availableRouters.length > 0) {
+    const group = document.createElement('optgroup');
+    group.label = 'Routers Personalizados';
+    for (const r of availableRouters) {
+      const opt = document.createElement('option');
+      opt.value = r.id;
+      const host = r.baseUrl.replace(/^https?:\/\//, '').split('/')[0];
+      opt.textContent = `${r.name} (${host})`;
+      group.appendChild(opt);
+    }
+    agentSelect.appendChild(group);
+  }
+  if (currentVal && [...agentSelect.options].some((o) => o.value === currentVal)) {
+    agentSelect.value = currentVal;
+  }
+}
+
+async function fetchRouters(): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE}/api/routers`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    availableRouters = (await res.json()) as RouterConfig[];
+    updateAgentSelect();
+    renderRoutersList();
+  } catch (err) {
+    console.warn('[routers] No se pudieron cargar los routers:', err);
+  }
+}
+void fetchRouters();
+
+function renderRoutersList(): void {
+  routersListEl.innerHTML = '';
+  if (availableRouters.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'routers-empty';
+    empty.textContent = 'Sin routers creados. Pulsa ＋ Nuevo.';
+    routersListEl.appendChild(empty);
+    return;
+  }
+  for (const r of availableRouters) {
+    const li = document.createElement('li');
+    li.className = `router-item${selectedRouterId === r.id ? ' active' : ''}`;
+
+    const info = document.createElement('div');
+    info.className = 'router-item-info';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'router-item-name';
+    nameSpan.textContent = r.name;
+
+    const host = r.baseUrl.replace(/^https?:\/\//, '').split('/')[0];
+    const subSpan = document.createElement('span');
+    subSpan.className = 'router-item-sub';
+    subSpan.textContent = `${r.id} · ${host}`;
+
+    info.append(nameSpan, subSpan);
+
+    const del = document.createElement('button');
+    del.className = 'router-item-del';
+    del.type = 'button';
+    del.title = 'Eliminar router';
+    del.innerHTML = `
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"></path>
+        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+      </svg>
+    `;
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void deleteCurrentRouter(r.id);
+    });
+
+    li.append(info, del);
+    li.addEventListener('click', () => selectRouter(r.id));
+    routersListEl.appendChild(li);
+  }
+}
+
+function selectRouter(id: string | null): void {
+  selectedRouterId = id;
+  routerFeedback.hidden = true;
+  routerFeedback.className = 'router-feedback';
+  routerFeedback.textContent = '';
+
+  if (!id) {
+    routerInputs.id.value = '';
+    routerInputs.name.value = '';
+    routerInputs.slug.value = '';
+    routerInputs.baseUrl.value = '';
+    routerInputs.apiKey.value = '';
+    routerInputs.opus.value = '';
+    routerInputs.sonnet.value = '';
+    routerInputs.haiku.value = '';
+    routerInputs.autoCompact.value = '500000';
+    routerDelBtn.hidden = true;
+  } else {
+    const r = availableRouters.find((item) => item.id === id);
+    if (r) {
+      routerInputs.id.value = r.id;
+      routerInputs.name.value = r.name;
+      routerInputs.slug.value = r.id;
+      routerInputs.baseUrl.value = r.baseUrl;
+      routerInputs.apiKey.value = r.apiKey;
+      routerInputs.opus.value = r.opusModel || '';
+      routerInputs.sonnet.value = r.sonnetModel || '';
+      routerInputs.haiku.value = r.haikuModel || '';
+      routerInputs.autoCompact.value = r.autoCompactWindow || '500000';
+      routerDelBtn.hidden = false;
+    }
+  }
+  renderRoutersList();
+}
+
+routerNewBtn.addEventListener('click', () => selectRouter(null));
+
+async function testCurrentRouter(): Promise<void> {
+  const baseUrl = routerInputs.baseUrl.value.trim();
+  const apiKey = routerInputs.apiKey.value.trim();
+  if (!baseUrl || !apiKey) {
+    routerFeedback.className = 'router-feedback error';
+    routerFeedback.textContent = '⚠️ Se requieren Base URL y API Key para probar la conexión.';
+    routerFeedback.hidden = false;
+    return;
+  }
+
+  routerFeedback.className = 'router-feedback testing';
+  routerFeedback.textContent = '⏳ Probando conexión con el proveedor…';
+  routerFeedback.hidden = false;
+  routerTestBtn.disabled = true;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/routers/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl,
+        apiKey,
+        opusModel: routerInputs.opus.value.trim() || undefined,
+        sonnetModel: routerInputs.sonnet.value.trim() || undefined,
+        haikuModel: routerInputs.haiku.value.trim() || undefined,
+      }),
+    });
+    const result = (await res.json()) as RouterTestResult;
+    if (result.ok) {
+      routerFeedback.className = 'router-feedback success';
+      routerFeedback.textContent = `✓ Conexión exitosa con el proveedor (${result.latencyMs ?? 0} ms)`;
+    } else {
+      routerFeedback.className = 'router-feedback error';
+      routerFeedback.textContent = `⚠️ Fallo: ${result.error || 'Error desconocido'}`;
+    }
+  } catch (err) {
+    routerFeedback.className = 'router-feedback error';
+    routerFeedback.textContent = `⚠️ Error de red al probar conexión: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    routerTestBtn.disabled = false;
+    routerFeedback.hidden = false;
+  }
+}
+
+async function saveCurrentRouter(): Promise<void> {
+  const name = routerInputs.name.value.trim();
+  const slug = routerInputs.slug.value.trim();
+  const baseUrl = routerInputs.baseUrl.value.trim();
+  const apiKey = routerInputs.apiKey.value.trim();
+
+  if (!name || !baseUrl || !apiKey) {
+    routerFeedback.className = 'router-feedback error';
+    routerFeedback.textContent = '⚠️ Por favor completa Nombre, Base URL y API Key.';
+    routerFeedback.hidden = false;
+    return;
+  }
+
+  const payload: Partial<RouterConfig> & { name: string; baseUrl: string; apiKey: string } = {
+    id: slug || undefined,
+    name,
+    baseUrl,
+    apiKey,
+    opusModel: routerInputs.opus.value.trim() || undefined,
+    sonnetModel: routerInputs.sonnet.value.trim() || undefined,
+    haikuModel: routerInputs.haiku.value.trim() || undefined,
+    autoCompactWindow: routerInputs.autoCompact.value.trim() || '500000',
+  };
+
+  try {
+    const res = await fetch(`${API_BASE}/api/routers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error((errJson as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    const saved = (await res.json()) as RouterConfig;
+    await fetchRouters();
+    selectRouter(saved.id);
+    routerFeedback.className = 'router-feedback success';
+    routerFeedback.textContent = `✓ Router '${saved.name}' guardado correctamente. Ya está disponible en la lista de agentes.`;
+    routerFeedback.hidden = false;
+    render();
+  } catch (err) {
+    routerFeedback.className = 'router-feedback error';
+    routerFeedback.textContent = `⚠️ Error al guardar: ${err instanceof Error ? err.message : String(err)}`;
+    routerFeedback.hidden = false;
+  }
+}
+
+async function deleteCurrentRouter(routerId?: string): Promise<void> {
+  const targetId = routerId || selectedRouterId;
+  if (!targetId) return;
+  const r = availableRouters.find((item) => item.id === targetId);
+  const name = r?.name || targetId;
+  const ok = await uiConfirm(`¿Eliminar el router '${name}'?`, 'Eliminar Router', true);
+  if (!ok) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/routers/${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await fetchRouters();
+    if (selectedRouterId === targetId) {
+      selectRouter(availableRouters.length > 0 ? availableRouters[0].id : null);
+    } else {
+      renderRoutersList();
+    }
+    render();
+  } catch (err) {
+    await uiAlert(`Error al eliminar router: ${err instanceof Error ? err.message : String(err)}`, 'Error', 'error');
+  }
+}
+
+routerTestBtn.addEventListener('click', () => void testCurrentRouter());
+routerSaveBtn.addEventListener('click', () => void saveCurrentRouter());
+routerDelBtn.addEventListener('click', () => void deleteCurrentRouter());
+
+// ---- Proyectos & Carpetas (CRUD + Exploración) ---------------------------
+let availableProjects: ProjectConfig[] = [];
+let selectedProjectId: string | null = null;
+
+const projectsListEl = $('#projects-list');
+const projectNewBtn = $('#project-btn-new');
+const projectSaveBtn = $('#project-btn-save');
+const projectDelBtn = $('#project-btn-delete');
+const projectBrowseBtn = $('#project-btn-browse');
+const projectDirChips = $('#project-dir-chips');
+const projectFeedback = $('#project-feedback');
+
+const projectInputs = {
+  id: $<HTMLInputElement>('#project-id'),
+  name: $<HTMLInputElement>('#project-name'),
+  path: $<HTMLInputElement>('#project-path'),
+  tag: $<HTMLInputElement>('#project-tag'),
+};
+
+const nsProjectSelect = $<HTMLSelectElement>('#ns-project');
+const nsBtnQuickProject = $<HTMLButtonElement>('#ns-btn-quick-project');
+const nsQuickProjectBox = $('#ns-quick-project-box');
+const nsQuickName = $<HTMLInputElement>('#ns-quick-name');
+const nsQuickPath = $<HTMLInputElement>('#ns-quick-path');
+const nsQuickSave = $<HTMLButtonElement>('#ns-quick-save');
+const nsQuickCancel = $<HTMLButtonElement>('#ns-quick-cancel');
+
+function getSelectedProjectCwd(): { path: string; project?: ProjectConfig } {
+  const val = nsProjectSelect.value;
+  const p = availableProjects.find((item) => item.id === val);
+  return {
+    path: p ? p.path : '.',
+    project: p,
+  };
+}
+
+function updateProjectSelect(): void {
+  const currentVal = nsProjectSelect.value;
+  nsProjectSelect.innerHTML = '';
+
+  if (availableProjects.length > 0) {
+    for (const p of availableProjects) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      const tagSuffix = p.tag ? ` [${p.tag}]` : '';
+      opt.textContent = `${p.name}${tagSuffix} — ${formatShortPath(p.path)}`;
+      nsProjectSelect.appendChild(opt);
+    }
+  } else {
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '(Sin proyectos guardados — Vincula uno arriba)';
+    nsProjectSelect.appendChild(emptyOpt);
+  }
+
+  if (currentVal && [...nsProjectSelect.options].some((o) => o.value === currentVal)) {
+    nsProjectSelect.value = currentVal;
+  } else if (availableProjects.length > 0) {
+    nsProjectSelect.value = availableProjects[0].id;
+  }
+}
+
+async function fetchProjects(): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE}/api/projects`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    availableProjects = (await res.json()) as ProjectConfig[];
+    updateProjectSelect();
+    renderProjectsList();
+  } catch (err) {
+    console.warn('[projects] No se pudieron cargar los proyectos:', err);
+  }
+}
+void fetchProjects();
+
+function renderProjectsList(): void {
+  projectsListEl.innerHTML = '';
+  if (availableProjects.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'routers-empty';
+    empty.textContent = 'Sin proyectos registrados. Pulsa ＋ Nuevo.';
+    projectsListEl.appendChild(empty);
+    return;
+  }
+  for (const p of availableProjects) {
+    const li = document.createElement('li');
+    li.className = `router-item${selectedProjectId === p.id ? ' active' : ''}`;
+
+    const info = document.createElement('div');
+    info.className = 'router-item-info';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'router-item-name';
+    nameSpan.textContent = p.name;
+    if (p.tag) {
+      const tagBadge = document.createElement('span');
+      tagBadge.className = 'router-tag-badge';
+      tagBadge.textContent = p.tag;
+      nameSpan.appendChild(tagBadge);
+    }
+
+    const subSpan = document.createElement('span');
+    subSpan.className = 'router-item-sub';
+    subSpan.textContent = p.path;
+
+    info.append(nameSpan, subSpan);
+
+    const del = document.createElement('button');
+    del.className = 'router-item-del';
+    del.type = 'button';
+    del.title = 'Eliminar proyecto';
+    del.innerHTML = `
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"></path>
+        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+      </svg>
+    `;
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void deleteCurrentProject(p.id);
+    });
+
+    li.append(info, del);
+    li.addEventListener('click', () => selectProject(p.id));
+    projectsListEl.appendChild(li);
+  }
+}
+
+function selectProject(id: string | null): void {
+  selectedProjectId = id;
+  projectFeedback.hidden = true;
+  projectFeedback.className = 'router-feedback';
+  projectFeedback.textContent = '';
+  projectDirChips.hidden = true;
+
+  if (!id) {
+    projectInputs.id.value = '';
+    projectInputs.name.value = '';
+    projectInputs.path.value = '';
+    projectInputs.tag.value = '';
+    projectDelBtn.hidden = true;
+  } else {
+    const p = availableProjects.find((item) => item.id === id);
+    if (p) {
+      projectInputs.id.value = p.id;
+      projectInputs.name.value = p.name;
+      projectInputs.path.value = p.path;
+      projectInputs.tag.value = p.tag || '';
+      projectDelBtn.hidden = false;
+    }
+  }
+  renderProjectsList();
+}
+
+projectNewBtn.addEventListener('click', () => selectProject(null));
+
+async function saveCurrentProject(): Promise<void> {
+  const name = projectInputs.name.value.trim();
+  const pathVal = projectInputs.path.value.trim();
+  if (!name || !pathVal) {
+    projectFeedback.className = 'router-feedback error';
+    projectFeedback.textContent = '⚠️ Nombre y Ruta de directorio son requeridos.';
+    projectFeedback.hidden = false;
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: projectInputs.id.value.trim() || undefined,
+        name,
+        path: pathVal,
+        tag: projectInputs.tag.value.trim() || undefined,
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error((errJson as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    const saved = (await res.json()) as ProjectConfig;
+    await fetchProjects();
+    selectProject(saved.id);
+    projectFeedback.className = 'router-feedback success';
+    projectFeedback.textContent = `✓ Proyecto '${saved.name}' guardado correctamente.`;
+    projectFeedback.hidden = false;
+  } catch (err) {
+    projectFeedback.className = 'router-feedback error';
+    projectFeedback.textContent = `⚠️ Error al guardar: ${err instanceof Error ? err.message : String(err)}`;
+    projectFeedback.hidden = false;
+  }
+}
+
+async function deleteCurrentProject(projectId?: string): Promise<void> {
+  const targetId = projectId || selectedProjectId;
+  if (!targetId) return;
+  const p = availableProjects.find((item) => item.id === targetId);
+  const name = p?.name || targetId;
+  const ok = await uiConfirm(`¿Eliminar el proyecto '${name}'?`, 'Eliminar Proyecto', true);
+  if (!ok) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await fetchProjects();
+    if (selectedProjectId === targetId) {
+      selectProject(availableProjects.length > 0 ? availableProjects[0].id : null);
+    } else {
+      renderProjectsList();
+    }
+  } catch (err) {
+    await uiAlert(`Error al eliminar proyecto: ${err instanceof Error ? err.message : String(err)}`, 'Error al eliminar', 'error');
+  }
+}
+
+async function exploreDirectories(targetDir?: string): Promise<void> {
+  try {
+    const q = targetDir ? `?dir=${encodeURIComponent(targetDir)}` : '';
+    const res = await fetch(`${API_BASE}/api/fs/directories${q}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { current: string; parent: string | null; exists: boolean; dirs: string[] };
+
+    projectDirChips.innerHTML = '';
+    if (!data.exists) {
+      const chip = document.createElement('span');
+      chip.className = 'dir-chip';
+      chip.textContent = '⚠️ Directorio no encontrado';
+      projectDirChips.appendChild(chip);
+      projectDirChips.hidden = false;
+      return;
+    }
+
+    if (data.parent) {
+      const parentChip = document.createElement('button');
+      parentChip.className = 'dir-chip';
+      parentChip.type = 'button';
+      parentChip.textContent = '📁 .. (Subir nivel)';
+      parentChip.addEventListener('click', () => {
+        projectInputs.path.value = data.parent!;
+        void exploreDirectories(data.parent!);
+      });
+      projectDirChips.appendChild(parentChip);
+    }
+
+    for (const d of data.dirs.slice(0, 30)) {
+      const chip = document.createElement('button');
+      chip.className = 'dir-chip';
+      chip.type = 'button';
+      chip.textContent = `📁 ${d}`;
+      chip.addEventListener('click', () => {
+        const next = data.current.endsWith('/') ? `${data.current}${d}` : `${data.current}/${d}`;
+        projectInputs.path.value = next;
+        void exploreDirectories(next);
+      });
+      projectDirChips.appendChild(chip);
+    }
+
+    projectDirChips.hidden = false;
+  } catch (err) {
+    console.warn('[fs] Error al explorar directorios:', err);
+  }
+}
+
+const projectPickerBtn = $<HTMLButtonElement>('#project-btn-picker');
+projectPickerBtn.addEventListener('click', async () => {
+  projectPickerBtn.disabled = true;
+  const originalHtml = projectPickerBtn.innerHTML;
+  projectPickerBtn.innerHTML = '<span>Abriendo…</span>';
+  try {
+    const res = await fetch(`${API_BASE}/api/fs/pick-directory`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { path: string | null; name?: string; cancelled: boolean; error?: string };
+    if (!data.cancelled && data.path) {
+      projectInputs.path.value = data.path;
+      if (!projectInputs.name.value.trim() && data.name) {
+        projectInputs.name.value = data.name;
+      }
+      projectFeedback.className = 'router-feedback success';
+      projectFeedback.textContent = `✓ Carpeta seleccionada: ${data.path}`;
+      projectFeedback.hidden = false;
+    } else if (data.error) {
+      projectFeedback.className = 'router-feedback error';
+      projectFeedback.textContent = `⚠️ ${data.error}`;
+      projectFeedback.hidden = false;
+    }
+  } catch (err) {
+    projectFeedback.className = 'router-feedback error';
+    projectFeedback.textContent = `⚠️ Error al abrir explorador: ${err instanceof Error ? err.message : String(err)}`;
+    projectFeedback.hidden = false;
+  } finally {
+    projectPickerBtn.disabled = false;
+    projectPickerBtn.innerHTML = originalHtml;
+  }
+});
+
+projectBrowseBtn.addEventListener('click', () => {
+  const current = projectInputs.path.value.trim() || undefined;
+  void exploreDirectories(current);
+});
+projectSaveBtn.addEventListener('click', () => void saveCurrentProject());
+projectDelBtn.addEventListener('click', () => void deleteCurrentProject());
+
+// Vinculación rápida de proyectos dentro de Nueva Sección
+const nsQuickPickerBtn = $<HTMLButtonElement>('#ns-quick-picker');
+nsQuickPickerBtn.addEventListener('click', async () => {
+  nsQuickPickerBtn.disabled = true;
+  const originalHtml = nsQuickPickerBtn.innerHTML;
+  nsQuickPickerBtn.innerHTML = '<span>Abriendo…</span>';
+  try {
+    const res = await fetch(`${API_BASE}/api/fs/pick-directory`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { path: string | null; name?: string; cancelled: boolean; error?: string };
+    if (!data.cancelled && data.path) {
+      nsQuickPath.value = data.path;
+      if (!nsQuickName.value.trim() && data.name) {
+        nsQuickName.value = data.name;
+      }
+    } else if (data.error) {
+      await uiAlert(`Error al abrir explorador: ${data.error}`, 'Explorador de Archivos', 'error');
+    }
+  } catch (err) {
+    await uiAlert(`Error al abrir explorador: ${err instanceof Error ? err.message : String(err)}`, 'Explorador de Archivos', 'error');
+  } finally {
+    nsQuickPickerBtn.disabled = false;
+    nsQuickPickerBtn.innerHTML = originalHtml;
+  }
+});
+
+nsBtnQuickProject.addEventListener('click', () => {
+  nsQuickProjectBox.hidden = !nsQuickProjectBox.hidden;
+  if (!nsQuickProjectBox.hidden) {
+    const current = getSelectedProjectCwd();
+    nsQuickPath.value = current.path !== '.' ? current.path : '';
+    nsQuickName.focus();
+  }
+});
+nsQuickCancel.addEventListener('click', () => {
+  nsQuickProjectBox.hidden = true;
+});
+nsQuickSave.addEventListener('click', async () => {
+  const name = nsQuickName.value.trim();
+  const pathVal = nsQuickPath.value.trim() || '.';
+  if (!name) {
+    await uiAlert('Por favor ingresa un nombre para el proyecto.', 'Nombre requerido');
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, path: pathVal }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const saved = (await res.json()) as ProjectConfig;
+    await fetchProjects();
+    nsProjectSelect.value = saved.id;
+    nsQuickProjectBox.hidden = true;
+    nsQuickName.value = '';
+    nsQuickPath.value = '';
+  } catch (err) {
+    await uiAlert(`Error al vincular proyecto: ${err instanceof Error ? err.message : String(err)}`, 'Error al vincular', 'error');
+  }
+});
+
 // ---- Crear / cerrar sección ---------------------------------------------
 // El formulario vive en un modal; el sidebar solo lista las secciones.
 const newSectionOverlay = $('#new-section-modal');
 function openNewSection(): void {
+  updateAgentSelect();
+  updateProjectSelect();
   renderProfiles(); // refresca la lista de perfiles guardados cada vez que se abre
   newSectionOverlay.hidden = false;
 }
@@ -550,12 +1334,12 @@ function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd:
 }
 
 $('#ns-create').addEventListener('click', () => {
-  createSection(
-    $<HTMLSelectElement>('#agent').value as AgentKind,
-    $<HTMLSelectElement>('#mode').value as PermMode,
-    $<HTMLSelectElement>('#kind').value as SectionKind,
-    $<HTMLInputElement>('#cwd').value.trim() || '.',
-  );
+  const agent = $<HTMLSelectElement>('#agent').value as AgentKind;
+  const mode = $<HTMLSelectElement>('#mode').value as PermMode;
+  const kind = $<HTMLSelectElement>('#kind').value as SectionKind;
+  const { path: cwd } = getSelectedProjectCwd();
+
+  createSection(agent, mode, kind, cwd);
 });
 
 // ---- Perfiles preseteados (localStorage) --------------------------------
@@ -599,7 +1383,10 @@ function renderProfiles(): void {
     li.className = 'profile';
     li.title = `Crear sesión: ${p.agent} · ${p.kind} · ${p.mode} · ${p.cwd}`;
 
-    const logo = AGENT_LOGO[p.agent];
+    const logo = AGENT_LOGO[p.agent as keyof typeof AGENT_LOGO];
+    const routerMeta = availableRouters.find((r) => r.id === p.agent);
+    const agentDisplayName = routerMeta ? routerMeta.name : p.agent;
+
     if (logo) {
       const img = document.createElement('img');
       img.className = 'profile-avatar';
@@ -609,7 +1396,7 @@ function renderProfiles(): void {
     } else {
       const sp = document.createElement('span');
       sp.className = 'profile-avatar profile-avatar-fallback';
-      sp.textContent = p.agent.slice(0, 1);
+      sp.textContent = agentDisplayName.slice(0, 1).toUpperCase();
       li.appendChild(sp);
     }
 
@@ -620,7 +1407,7 @@ function renderProfiles(): void {
     name.textContent = p.name;
     const meta = document.createElement('span');
     meta.className = 'profile-meta';
-    meta.textContent = `${p.agent} · ${p.kind === 'pty' ? 'TUI' : 'chat'} · ${p.mode}`;
+    meta.textContent = `${agentDisplayName} · ${p.kind === 'pty' ? 'TUI' : 'chat'} · ${p.mode}`;
     info.append(name, meta);
 
     const del = document.createElement('button');
@@ -643,14 +1430,19 @@ function renderProfiles(): void {
 }
 
 // Guarda la configuración actual del form como un perfil nuevo.
-$('#ns-save-profile').addEventListener('click', () => {
+$('#ns-save-profile').addEventListener('click', async () => {
   const agent = $<HTMLSelectElement>('#agent').value as AgentKind;
   const mode = $<HTMLSelectElement>('#mode').value as PermMode;
   const kind = $<HTMLSelectElement>('#kind').value as SectionKind;
-  const cwd = $<HTMLInputElement>('#cwd').value.trim() || '.';
-  const name = prompt('Nombre del perfil:', `${agent} ${kind === 'pty' ? 'TUI' : 'chat'}`)?.trim();
-  if (!name) return;
-  profiles.push({ id: newSectionId(), name, agent, mode, kind, cwd });
+  const { path: cwd, project: projectObj } = getSelectedProjectCwd();
+  const projLabel = projectObj ? ` (${projectObj.name})` : '';
+  const routerMeta = availableRouters.find((r) => r.id === agent);
+  const agentDisplayName = routerMeta ? routerMeta.name : agent;
+
+  const defaultName = `${agentDisplayName} ${kind === 'pty' ? 'TUI' : 'Chat'}${projLabel}`;
+  const name = await uiPrompt('Guardar como Perfil', defaultName, 'Nombre del perfil preconfigurado');
+  if (!name || !name.trim()) return;
+  profiles.push({ id: newSectionId(), name: name.trim(), agent, mode, kind, cwd });
   persistProfiles();
   renderProfiles();
 });
@@ -711,11 +1503,11 @@ function mountTerm(s: UiSection): void {
 // ---- Hablar (push-to-talk) ----------------------------------------------
 let stt: SttSession | null = null;
 
-function startTalk(): void {
+async function startTalk(): Promise<void> {
   if (listening) return;
   if (!overlay.hidden || !newSectionOverlay.hidden || !readTextModal.hidden) return; // un modal abierto → no capturar voz
   if (!activeId) {
-    alert('Crea o elige una sección primero.');
+    await uiAlert('Crea o elige una sección primero.', 'Iniciar Conversación');
     return;
   }
   listening = true;
@@ -760,7 +1552,7 @@ function startTalk(): void {
     talkBtn.classList.remove('active');
     meter.stop();
     setOrb('idle');
-    alert(e instanceof Error ? e.message : String(e));
+    await uiAlert(e instanceof Error ? e.message : String(e), 'Error de Voz', 'error');
   }
 }
 
@@ -1203,22 +1995,77 @@ el.cleanProvider.addEventListener('change', () => {
   }
 });
 
-function openSettings(): void {
+type SettingsTab = 'routers' | 'projects' | 'voice';
+let activeSettingsTab: SettingsTab = 'routers';
+
+const tabBtnRouters = $<HTMLButtonElement>('#tab-btn-routers');
+const tabBtnProjects = $<HTMLButtonElement>('#tab-btn-projects');
+const tabBtnVoice = $<HTMLButtonElement>('#tab-btn-voice');
+const tabPaneRouters = $('#tab-pane-routers');
+const tabPaneProjects = $('#tab-pane-projects');
+const tabPaneVoice = $('#tab-pane-voice');
+const footRouters = $('#footer-routers');
+const footProjects = $('#footer-projects');
+const footVoice = $('#footer-voice');
+
+function switchSettingsTab(tab: SettingsTab): void {
+  activeSettingsTab = tab;
+  tabBtnRouters.classList.toggle('active', tab === 'routers');
+  tabBtnProjects.classList.toggle('active', tab === 'projects');
+  tabBtnVoice.classList.toggle('active', tab === 'voice');
+  tabPaneRouters.hidden = tab !== 'routers';
+  tabPaneProjects.hidden = tab !== 'projects';
+  tabPaneVoice.hidden = tab !== 'voice';
+  footRouters.hidden = tab !== 'routers';
+  footProjects.hidden = tab !== 'projects';
+  footVoice.hidden = tab !== 'voice';
+
+  if (tab === 'projects') {
+    if (availableProjects.length > 0 && !selectedProjectId) {
+      selectProject(availableProjects[0].id);
+    } else if (availableProjects.length === 0) {
+      selectProject(null);
+    }
+  }
+}
+
+tabBtnRouters.addEventListener('click', () => switchSettingsTab('routers'));
+tabBtnProjects.addEventListener('click', () => switchSettingsTab('projects'));
+tabBtnVoice.addEventListener('click', () => switchSettingsTab('voice'));
+
+function openSettings(defaultTab: SettingsTab = activeSettingsTab): void {
   populateModal();
+  switchSettingsTab(defaultTab);
+  if (defaultTab === 'routers') {
+    if (availableRouters.length > 0 && !selectedRouterId) {
+      selectRouter(availableRouters[0].id);
+    } else if (availableRouters.length === 0) {
+      selectRouter(null);
+    }
+  } else if (defaultTab === 'projects') {
+    if (availableProjects.length > 0 && !selectedProjectId) {
+      selectProject(availableProjects[0].id);
+    } else if (availableProjects.length === 0) {
+      selectProject(null);
+    }
+  }
   overlay.hidden = false;
 }
 function closeSettings(): void {
   overlay.hidden = true;
 }
-$('#open-settings').addEventListener('click', openSettings);
+$('#open-settings').addEventListener('click', () => openSettings());
 $('#settings-close').addEventListener('click', closeSettings);
 $('#settings-cancel').addEventListener('click', closeSettings);
+$('#settings-cancel-routers').addEventListener('click', closeSettings);
+$('#settings-cancel-projects').addEventListener('click', closeSettings);
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) closeSettings(); // clic en el backdrop
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (!readTextModal.hidden) closeReadModal();
+  if (!dialogOverlay.hidden) closeUiDialog(null);
+  else if (!readTextModal.hidden) closeReadModal();
   else if (!overlay.hidden) closeSettings();
   else if (!newSectionOverlay.hidden) closeNewSection();
 });
@@ -1226,9 +2073,9 @@ document.addEventListener('keydown', (e) => {
 // ---- Modal de lectura de texto (sin límite de caracteres) ----------------
 let readingTargetSectionId: string | null = null;
 
-function openReadModal(): void {
+async function openReadModal(): Promise<void> {
   if (!activeId) {
-    alert('Crea o selecciona una sección primero.');
+    await uiAlert('Crea o selecciona una sección primero.', 'Lectura de texto');
     return;
   }
   readingTargetSectionId = activeId;
@@ -1272,7 +2119,7 @@ function readTextAloud(sectionId: string, text: string): void {
   }, 40);
 }
 
-function submitReadText(): void {
+async function submitReadText(): Promise<void> {
   const text = readTextarea.value.trim();
   if (!text) {
     readTextarea.focus();
@@ -1280,14 +2127,14 @@ function submitReadText(): void {
   }
   const targetId = readingTargetSectionId || activeId;
   if (!targetId) {
-    alert('No hay una sección seleccionada.');
+    await uiAlert('No hay una sección seleccionada.', 'Lectura de texto');
     return;
   }
   closeReadModal();
   readTextAloud(targetId, text);
 }
 
-readBtn.addEventListener('click', openReadModal);
+readBtn.addEventListener('click', () => void openReadModal());
 readCloseBtn.addEventListener('click', closeReadModal);
 readCancelBtn.addEventListener('click', closeReadModal);
 readTextModal.addEventListener('click', (e) => {
@@ -1297,10 +2144,10 @@ readTextarea.addEventListener('input', updateReadStats);
 readTextarea.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
     e.preventDefault();
-    submitReadText();
+    void submitReadText();
   }
 });
-readSubmitBtn.addEventListener('click', submitReadText);
+readSubmitBtn.addEventListener('click', () => void submitReadText());
 
 readPasteBtn.addEventListener('click', async () => {
   try {
@@ -1322,14 +2169,16 @@ readClearBtn.addEventListener('click', () => {
   readTextarea.focus();
 });
 
-$('#settings-save').addEventListener('click', () => {
+$('#settings-save').addEventListener('click', async () => {
   const next = readSettingsModal();
   // Avisa si se eligió API sin config completa y sin fallback en el server.
   if (next.stt === 'api' && !apiReady(next.sttApi) && !serverVoice.stt) {
-    if (!confirm('STT por API sin endpoint/key y sin fallback en .env. ¿Guardar igual?')) return;
+    const ok = await uiConfirm('STT por API sin endpoint/key y sin fallback en .env. ¿Guardar igual?', 'Configuración de Voz');
+    if (!ok) return;
   }
   if (next.tts === 'api' && !apiReady(next.ttsApi) && !serverVoice.tts) {
-    if (!confirm('TTS por API sin endpoint/key y sin fallback en .env. ¿Guardar igual?')) return;
+    const ok = await uiConfirm('TTS por API sin endpoint/key y sin fallback en .env. ¿Guardar igual?', 'Configuración de Voz');
+    if (!ok) return;
   }
   stored = next;
   localStorage.setItem(STORE_KEY, JSON.stringify(stored));
@@ -1415,8 +2264,10 @@ function render(): void {
     dragHandle.title = 'Arrastrar para reordenar';
 
     // 2. Avatar / Logo (20x20)
-    const logo = AGENT_LOGO[s.agent];
-    const displayTitle = s.customTitle || s.agent;
+    const logo = AGENT_LOGO[s.agent as keyof typeof AGENT_LOGO];
+    const routerMeta = availableRouters.find((r) => r.id === s.agent);
+    const agentDisplayName = routerMeta ? routerMeta.name : s.agent;
+    const displayTitle = s.customTitle || agentDisplayName;
     let avatar: HTMLElement;
     if (logo) {
       // Logo personalizado (claude, codex, opencode) siempre se mantiene
@@ -1426,7 +2277,7 @@ function render(): void {
       img.alt = s.agent;
       avatar = img;
     } else {
-      // Fallback: inicial del nombre (si se renombró, inicial del nuevo nombre)
+      // Fallback: inicial del nombre (si se renombró o es router, inicial del nombre)
       const span = document.createElement('span');
       span.className = 'card-avatar card-avatar-fallback';
       span.textContent = displayTitle.trim().slice(0, 1).toUpperCase();
@@ -1486,7 +2337,7 @@ function render(): void {
 
       const renameBtn = document.createElement('button');
       renameBtn.className = 'card-rename-btn';
-      renameBtn.textContent = '✏';
+      renameBtn.innerHTML = SVG_EDIT;
       renameBtn.title = 'Renombrar sesión';
       renameBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1517,10 +2368,10 @@ function render(): void {
     status.className = s.ready ? 'card-status ready' : 'card-status';
     status.title = s.ready ? 'lista' : 'conectando…';
 
-    // 6. Botón Mute por sección (🔊 / 🔇)
+    // 6. Botón Mute por sección (SVG vector)
     const muteBtnCard = document.createElement('button');
-    muteBtnCard.className = v.muted ? 'card-mute-btn active' : 'card-mute-btn';
-    muteBtnCard.textContent = v.muted ? '🔇' : '🔊';
+    muteBtnCard.className = 'card-mute-btn';
+    updateMuteButton(muteBtnCard, v.muted);
     muteBtnCard.title = v.muted ? 'Activar voz en esta sección' : 'Silenciar voz en esta sección';
     muteBtnCard.addEventListener('click', (ev) => {
       ev.stopPropagation();

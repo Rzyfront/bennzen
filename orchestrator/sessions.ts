@@ -6,6 +6,7 @@ import { ClaudeAdapter } from './adapters/claude';
 import { CodexAdapter } from './adapters/codex';
 import { ClaudeProxyAdapter } from './adapters/claude-proxy';
 import { AgyAdapter } from './adapters/agy';
+import { getRouter } from './routers';
 
 /** Una sección activa = una sesión de agente con su contexto e historial. */
 export interface Section {
@@ -52,8 +53,11 @@ class AdapterPool {
       case 'agy':
         return new AgyAdapter();
       default: {
-        const _exhaustive: never = kind;
-        throw new Error(`Agente desconocido: ${String(_exhaustive)}`);
+        const router = getRouter(kind);
+        if (router) {
+          return new ClaudeProxyAdapter(router);
+        }
+        throw new Error(`Agente desconocido: ${String(kind)}`);
       }
     }
   }
