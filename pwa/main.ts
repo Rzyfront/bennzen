@@ -1,4 +1,5 @@
 import { Bridge, newSectionId, type UiSection } from './sections';
+import { initGit, forgetGitSection } from './git';
 import { TermView } from './terminal';
 import { OrbParticles } from './orb-particles';
 import {
@@ -25,6 +26,7 @@ import museLogo from './assets/agents/spark.png';
 const SVG_SPEAKER_ON = `<svg class="icon-speaker" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
 const SVG_SPEAKER_MUTED = `<svg class="icon-speaker-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 const SVG_EDIT = `<svg class="icon-edit" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>`;
+const SVG_X = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
 
 function updateMuteButton(el: HTMLElement, isMuted: boolean): void {
   el.innerHTML = isMuted ? SVG_SPEAKER_MUTED : SVG_SPEAKER_ON;
@@ -187,6 +189,54 @@ const sections = new Map<string, UiSection>();
 let activeId: string | null = null;
 
 const bridge = new Bridge(WS_URL);
+
+// ---- Panel git (F1: widget del header en solo lectura) --------------------
+const gitBadges = new Map<string, { branch: string; dirty: boolean }>();
+
+/** Parche in-place de los badges (sin render() para no realimentar syncActiveSection). */
+function applyGitBadges(badges: Map<string, { branch: string; dirty: boolean }>): void {
+  gitBadges.clear();
+  for (const [k, v] of badges) gitBadges.set(k, v);
+  for (const li of document.querySelectorAll('#sections .card')) {
+    const id = (li as HTMLElement).dataset.sectionId;
+    if (!id) continue;
+    const main = li.querySelector('.card-main');
+    if (!main) continue;
+    // Sin línea de rama en la card: el estado git vive en el punto del botón cerrar.
+    main.querySelector('.card-git')?.remove();
+    const gb = gitBadges.get(id);
+    if (gb) {
+      (li as HTMLElement).dataset.git = gb.dirty ? 'dirty' : 'clean';
+    } else {
+      delete (li as HTMLElement).dataset.git;
+    }
+  }
+}
+
+const git = initGit({
+  apiBase: API_BASE,
+  getActiveSection: () => {
+    if (!activeId) return undefined;
+    const s = sections.get(activeId);
+    if (!s) return undefined;
+    return { sectionId: s.sectionId, cwd: s.cwd };
+  },
+  uiConfirm,
+  uiAlert,
+  uiPrompt,
+  onBadges: applyGitBadges,
+  getRouterId: () => selectedRouterId,
+  speakOnce: (text: string) => {
+    // A demanda (clic en 🔊): suena aunque la sección esté muteada —el mute
+    // frena la voz ambiental del agente, no una petición explícita— y no
+    // cambia el estado de mute.
+    if (!activeId) return;
+    const v = getSectionVoice(activeId);
+    v.tts.push(text);
+    v.tts.flush();
+  },
+  getAllSections: () => [...sections.values()].map((s) => ({ sectionId: s.sectionId, cwd: s.cwd })),
+});
 
 // ---- Configuración de voz (localStorage; .env del server = fallback) -----
 // La config completa (motor + proveedor + endpoint + key + modelo + voz) vive
@@ -643,10 +693,12 @@ bridge.on((m) => {
       // 'done' de rpc = fin de turno real → flush inmediato (salta el debounce).
       else if (m.delta.type === 'done') v.tts.flush(true);
     }
+    git.notifyActivity(m.sectionId);
     render();
   } else if (m.t === 'term-data') {
     const s = sections.get(m.sectionId);
     if (!s) return;
+    git.notifyActivity(m.sectionId);
     if (s.term) {
       s.term.write(m.data);
     } else {
@@ -1489,6 +1541,8 @@ $('#ns-save-profile').addEventListener('click', async () => {
 
 function closeSection(sectionId: string): void {
   bridge.close(sectionId); // backend hace teardown del agente (sin huérfanos)
+  forgetGitSection(sectionId); // limpia bennzen.git-repo-by-section
+  gitBadges.delete(sectionId);
   const s = sections.get(sectionId);
   s?.term?.dispose();
   sections.delete(sectionId);
@@ -1545,7 +1599,7 @@ let stt: SttSession | null = null;
 
 async function startTalk(): Promise<void> {
   if (listening) return;
-  if (!overlay.hidden || !newSectionOverlay.hidden || !readTextModal.hidden) return; // un modal abierto → no capturar voz
+  if (!overlay.hidden || !newSectionOverlay.hidden || !readTextModal.hidden || git.isOpen()) return; // un modal abierto → no capturar voz
   if (!activeId) {
     await uiAlert('Crea o elige una sección primero.', 'Iniciar Conversación');
     return;
@@ -2106,6 +2160,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!dialogOverlay.hidden) closeUiDialog(null);
   else if (!readTextModal.hidden) closeReadModal();
+  else if (git.isOpen()) git.close();
   else if (!overlay.hidden) closeSettings();
   else if (!newSectionOverlay.hidden) closeNewSection();
 });
@@ -2403,10 +2458,12 @@ function render(): void {
 
     main.append(titleRow, sub, pathEl);
 
-    // 4. Estado de conexión
-    const status = document.createElement('span');
-    status.className = s.ready ? 'card-status ready' : 'card-status';
-    status.title = s.ready ? 'lista' : 'conectando…';
+    // Estado git + conexión: vive en el punto del botón de cerrar (sin línea
+    // de rama ni punto suelto en la card).
+    const gb = gitBadges.get(s.sectionId);
+    if (gb) li.dataset.git = gb.dirty ? 'dirty' : 'clean';
+    else delete li.dataset.git;
+    li.dataset.ready = s.ready ? '1' : '0';
 
     // 6. Botón Mute por sección (SVG vector)
     const muteBtnCard = document.createElement('button');
@@ -2418,11 +2475,13 @@ function render(): void {
       toggleSectionMute(s.sectionId);
     });
 
-    // 7. Botón cerrar
+    // 7. Botón cerrar: punto de estado por defecto; en hover de la card el
+    // punto hace halo fuerte y se convierte en la X de cerrar.
     const x = document.createElement('button');
-    x.className = 'x';
-    x.textContent = '✕';
+    x.className = 'x card-close';
     x.title = 'Cerrar sección';
+    x.setAttribute('aria-label', 'Cerrar sección');
+    x.innerHTML = `<span class="card-close-dot" aria-hidden="true"></span><span class="card-close-x" aria-hidden="true">${SVG_X}</span>`;
     x.addEventListener('click', (ev) => {
       ev.stopPropagation();
       closeSection(s.sectionId);
@@ -2507,7 +2566,7 @@ function render(): void {
       });
     });
 
-    li.append(dragHandle, avatar, main, status, muteBtnCard, x);
+    li.append(dragHandle, avatar, main, muteBtnCard, x);
     list.appendChild(li);
   }
 
@@ -2541,6 +2600,9 @@ function render(): void {
 
   // Sincroniza el botón de mute principal con la sección activa
   updateMainMuteBtn();
+
+  // Widget git: sigue a la sección activa (barato si no cambió).
+  git.syncActiveSection();
 }
 
 render();

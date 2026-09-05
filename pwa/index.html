@@ -14,6 +14,13 @@
         <img class="brand-logo" src="./assets/Bennzen.png" alt="BENNZEN" width="32" height="32" />
         <span class="brand-name">BENNZEN</span>
       </div>
+      <div id="git-center">
+        <button id="git-info" class="git-info" title="Estado git" hidden>
+          <span id="git-info-line1" class="git-line1"></span>
+          <span id="git-info-line2" class="git-line2"></span>
+        </button>
+        <div id="git-selector" class="git-selector" hidden></div>
+      </div>
       <div class="header-right">
         <span id="status" class="off">○ desconectado</span>
         <div class="header-toggles">
@@ -683,6 +690,33 @@
         <footer class="modal-foot ui-dialog-foot">
           <button id="ui-dialog-cancel" class="ghost" type="button">Cancelar</button>
           <button id="ui-dialog-confirm" class="primary-btn" type="button">Aceptar</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Modal Git (F2: dos columnas; F3: escrituras; F4: pestaña PR; F5: voz ✨) -->
+    <div id="git-modal" class="overlay" hidden>
+      <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="git-modal-title">
+        <header class="modal-head git-modal-head">
+          <div class="git-modal-title-wrap">
+            <h2 id="git-modal-title">Git</h2>
+            <p id="git-modal-sub" class="git-modal-sub" hidden></p>
+          </div>
+          <div class="git-modal-head-actions">
+            <button id="git-modal-speak" class="x" title="Escuchar resumen del estado (router de Ajustes → Routers, voz de la sección)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg></button>
+            <button id="git-modal-refresh" class="x" title="Actualizar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg></button>
+            <button id="git-modal-close" class="x" title="Cerrar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+          </div>
+        </header>
+        <div id="git-modal-body" class="modal-body"></div>
+        <footer id="git-modal-foot" class="modal-foot git-foot" hidden>
+          <textarea id="git-commit-msg" rows="1" wrap="off" placeholder="mensaje de commit…"></textarea>
+          <div class="git-foot-actions">
+            <button id="git-ai-msg" class="ghost mini" type="button" title="Generar mensaje con IA (preparado, o todo si marcas «todo»)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"></path></svg></button>
+            <label class="git-check"><input id="git-commit-all" type="checkbox" /> todo</label>
+            <button id="git-commit-btn" class="ghost" type="button">Commit</button>
+            <button id="git-commit-push-btn" class="primary-btn" type="button">Commit + Push</button>
+          </div>
         </footer>
       </div>
     </div>

@@ -5,6 +5,7 @@ import { PtyRegistry } from './pty';
 import { handleVoiceHttp } from './voice-proxy';
 import { handleRoutersHttp } from './routers';
 import { handleProjectsHttp } from './projects';
+import { handleGitHttp, setGitHooks } from './git';
 import { saveImage, cleanupSection, cleanupAllUploads } from './uploads';
 import { applyDelta, pushUser } from '../shared/transcript';
 import type { ClientMsg, ServerMsg } from '../shared/protocol';
@@ -34,6 +35,8 @@ const httpServer = http.createServer(async (req, res) => {
     const handled = await handleProjectsHttp(req, res);
     if (handled) return;
   }
+  const handled = await handleGitHttp(req, res);
+  if (handled) return;
   if (req.url?.startsWith('/api/')) {
     void handleVoiceHttp(req, res);
     return;
@@ -59,6 +62,22 @@ const wss = new WebSocketServer({ server: httpServer });
 const ptyRegistry = new PtyRegistry({
   onData: (id, data) => broadcast({ t: 'term-data', sectionId: id, data }),
   onSpeak: (id, text) => broadcast({ t: 'speak', sectionId: id, text }),
+});
+
+// Git (F0): el módulo git resuelve sectionId → cwd por inyección,
+// con el mismo patrón que PtyHooks. Sin getter individual en PtyRegistry.
+setGitHooks({
+  resolveCwd: (sectionId, cwd) => {
+    if (cwd) return cwd;
+    if (sectionId) {
+      const hit = ptyRegistry.list().find((s) => s.sectionId === sectionId);
+      if (hit) return hit.cwd;
+      const rpc = registry.list().find((s) => s.sectionId === sectionId);
+      if (rpc) return rpc.cwd;
+    }
+    return undefined;
+  },
+  listLiveCwds: () => [...registry.list(), ...ptyRegistry.list()].map((s) => s.cwd),
 });
 
 httpServer.on('error', (err: NodeJS.ErrnoException) => {
