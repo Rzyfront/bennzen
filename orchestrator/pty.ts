@@ -88,6 +88,11 @@ function resolveCommand(
         case 'readonly':
           return { file: 'agy', args: ['--mode', 'plan'] };
       }
+    case 'muse':
+      return {
+        file: 'muse',
+        args: mode === 'yolo' ? ['--yolo'] : mode === 'readonly' ? ['--disable-write', '--disable-shell'] : [],
+      };
     default: {
       const router = getRouter(agent);
       if (router) {

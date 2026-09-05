@@ -3,7 +3,7 @@
 
 export type PermMode = 'yolo' | 'safe-auto' | 'readonly';
 
-export type BuiltinAgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'qwen' | 'agy';
+export type BuiltinAgentKind = 'mock' | 'opencode' | 'claude' | 'codex' | 'mini' | 'qwen' | 'agy' | 'muse';
 export type AgentKind = BuiltinAgentKind | `router:${string}` | (string & {});
 
 /** Configuración de un Router personalizado de Claude Code. */

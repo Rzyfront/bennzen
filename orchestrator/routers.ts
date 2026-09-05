@@ -146,7 +146,7 @@ export async function testRouter(config: Partial<RouterConfig>): Promise<RouterT
       },
       body: JSON.stringify({
         model: testModel,
-        max_tokens: 5,
+        max_tokens: 16, // algunos proveedores (ej. Mause Spark) exigen >= 16
         messages: [{ role: 'user', content: 'ping' }],
       }),
       signal: AbortSignal.timeout(10000),

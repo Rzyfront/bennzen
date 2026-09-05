@@ -19,6 +19,7 @@ import claudeLogo from './assets/agents/claude.png';
 import codexLogo from './assets/agents/codex.webp';
 import opencodeLogo from './assets/agents/opencode.png';
 import antigravityLogo from './assets/agents/antigravity-logo.png';
+import museLogo from './assets/agents/spark.png';
 
 // Plantillas SVG vectoriales para estados de audio y edición (cero emojis por defecto)
 const SVG_SPEAKER_ON = `<svg class="icon-speaker" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
@@ -38,6 +39,7 @@ const AGENT_LOGO: Partial<Record<AgentKind, string>> = {
   codex: codexLogo,
   opencode: opencodeLogo,
   agy: antigravityLogo,
+  muse: museLogo,
 };
 
 const WS_URL = `ws://${location.hostname}:4319`;
@@ -259,6 +261,9 @@ interface SectionVoice {
 }
 const sectionVoices = new Map<string, SectionVoice>();
 const MUTE_STORAGE_KEY = 'bennzen.section-mute';
+// Marca de la migración al default "silenciada": antes la ausencia de entrada
+// significaba "con voz"; ahora significa "sin voz".
+const MUTE_MIGRATED_KEY = 'bennzen.section-mute.default-off';
 
 function loadMutedSections(): Record<string, boolean> {
   try {
@@ -268,11 +273,39 @@ function loadMutedSections(): Record<string, boolean> {
   }
 }
 
+/**
+ * Estado de silencio de una sección. Toda sección NUEVA nace silenciada: sin
+ * entrada explícita en el mapa se considera muteada, y es el usuario quien
+ * abre la voz con el botón del altavoz.
+ */
+function isSectionMuted(sectionId: string, map = loadMutedSections()): boolean {
+  return map[sectionId] !== false;
+}
+
 function saveSectionMute(sectionId: string, isMuted: boolean): void {
   const map = loadMutedSections();
-  if (isMuted) map[sectionId] = true;
-  else delete map[sectionId];
+  map[sectionId] = isMuted; // explícito en ambos sentidos (el default es muteada)
   localStorage.setItem(MUTE_STORAGE_KEY, JSON.stringify(map));
+}
+
+/** Olvida el estado de una sección (al cerrarla) para no acumular basura. */
+function clearSectionMute(sectionId: string): void {
+  const map = loadMutedSections();
+  delete map[sectionId];
+  localStorage.setItem(MUTE_STORAGE_KEY, JSON.stringify(map));
+}
+
+/**
+ * Migración única: con la semántica anterior, las secciones ya existentes sin
+ * entrada tenían voz. Se les escribe `false` explícito para que el nuevo default
+ * (silencio) solo afecte a las secciones creadas de aquí en adelante.
+ */
+function migrateMuteDefaults(existingIds: string[]): void {
+  if (localStorage.getItem(MUTE_MIGRATED_KEY)) return;
+  const map = loadMutedSections();
+  for (const id of existingIds) if (map[id] === undefined) map[id] = false;
+  localStorage.setItem(MUTE_STORAGE_KEY, JSON.stringify(map));
+  localStorage.setItem(MUTE_MIGRATED_KEY, '1');
 }
 
 function getSectionVoice(sectionId: string): SectionVoice {
@@ -283,7 +316,7 @@ function getSectionVoice(sectionId: string): SectionVoice {
     v = {
       tts: sTts,
       speaking: false,
-      muted: !!mutedMap[sectionId],
+      muted: isSectionMuted(sectionId, mutedMap),
       level: 0,
     };
     wireSectionTts(sectionId, v);
@@ -538,9 +571,12 @@ bridge.on((m) => {
     // Estado COMPLETO del orquestador → restaura todas las sesiones (tras refresh).
     const incoming = new Set(m.sessions.map((s) => s.sectionId));
     const customTitles = loadCustomTitles();
+    // Antes de leer el mapa: preserva el estado de las secciones que ya existían
+    // (el default "silenciada" solo aplica a las nuevas).
+    migrateMuteDefaults(m.sessions.map((s) => s.sectionId));
     const mutedMap = loadMutedSections();
     for (const info of m.sessions) {
-      const isMuted = !!mutedMap[info.sectionId];
+      const isMuted = isSectionMuted(info.sectionId, mutedMap);
       const ex = sections.get(info.sectionId);
       if (ex) {
         ex.ready = info.ready;
@@ -685,6 +721,7 @@ function updateAgentSelect(): void {
       <option value="mini">mini (MiniMax M3)</option>
       <option value="qwen">qwen (Bailian Qwen)</option>
       <option value="agy">agy (Antigravity)</option>
+      <option value="muse">muse</option>
     </optgroup>
   `;
   if (availableRouters.length > 0) {
@@ -1314,8 +1351,11 @@ newSectionOverlay.addEventListener('click', (e) => {
 /** Crea una sección (desde el form manual o desde un perfil) y la activa. */
 function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd: string): void {
   const sectionId = newSectionId();
-  const s: UiSection = { sectionId, agent, mode, cwd, ready: false, kind, entries: [] };
+  // Nace SILENCIADA: nada de TTS hasta que el usuario active el altavoz.
+  const s: UiSection = { sectionId, agent, mode, cwd, ready: false, kind, entries: [], muted: true };
   sections.set(sectionId, s);
+  saveSectionMute(sectionId, true);
+  getSectionVoice(sectionId); // materializa el estado de voz ya muteado
   activeId = sectionId;
   closeNewSection();
 
@@ -1458,7 +1498,7 @@ function closeSection(sectionId: string): void {
     v.tts.stop();
     sectionVoices.delete(sectionId);
   }
-  saveSectionMute(sectionId, false);
+  clearSectionMute(sectionId);
   const order = loadSectionOrder().filter((id) => id !== sectionId);
   saveSectionOrder(order);
   if (activeId === sectionId) {

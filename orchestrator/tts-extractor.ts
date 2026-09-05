@@ -36,7 +36,9 @@ const WARN_PREFIX = /^\s*[⚠✗✘✖⛔🚫❗❌‼⚡]/u;
 // se descarta. La marca de asistente DEPENDE DEL CLI (verificada con capturas
 // reales: ver scripts/capture-tui.mjs):
 //   claude → ⏺ (U+23FA)        codex → ● / •        opencode → SIN marca.
-// Por eso es per-agente: una lista global fija no sirve para los tres.
+//   agy → SIN marca            muse → SIN marca (⏺ es frame de spinner,
+//   ◆ cabecera de sección, ›/❯ lado usuario — vistos en el binario real).
+// Por eso es per-agente: una lista global fija no sirve para todos.
 interface ExtractProfile {
   /** Glifos iniciales que marcan prosa del asistente. */
   assistant: Set<string>;
