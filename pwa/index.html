@@ -41,6 +41,7 @@
     </header>
 
     <main>
+      <nav id="spaces-rail" aria-label="Espacios"></nav>
       <aside id="sidebar-left">
         <button id="new-section" class="new-section">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
@@ -49,6 +50,8 @@
           </svg>
           <span>Nueva sección</span>
         </button>
+        <!-- Banner "Restaurar N sesiones" (visible solo si hay sesiones restaurables). -->
+        <div id="restore-banner" hidden></div>
         <ul id="sections"></ul>
         <button id="open-settings" class="ghost settings-btn" title="Ajustes de Bennzen">
           <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -200,6 +203,12 @@
                 </div>
               </div>
             </div>
+
+            <label>Espacio destino
+              <select id="ns-space">
+                <!-- Se llena dinámicamente con los espacios (default = vista activa) -->
+              </select>
+            </label>
 
             <div class="ns-left-actions">
               <button id="ns-create" class="primary-btn" type="button">

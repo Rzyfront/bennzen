@@ -1,4 +1,34 @@
 import { Bridge, newSectionId, type UiSection } from './sections';
+import {
+  ACTIVE_SPACE_KEY,
+  ALL_VIEW,
+  SECTION_CONFIG_KEY,
+  SECTION_ORDER_V1_KEY,
+  SECTION_SPACE_KEY,
+  SPACE_ACTIVE_KEY,
+  SPACE_PALETTE,
+  SPACES_KEY,
+  UNASSIGNED_BUCKET,
+  getOrderBucket,
+  getRestorableIds,
+  getSpaceActive,
+  loadActiveSpace,
+  loadSectionConfigs,
+  loadSectionSpace,
+  loadSpaceOrders,
+  loadSpaces,
+  purgeSectionData,
+  resolveSpaceColor,
+  saveActiveSpace,
+  saveOrderBucket,
+  saveSectionConfig,
+  saveSectionSpace,
+  saveSpaceOrders,
+  saveSpaces,
+  setSpaceActive,
+  setSpaceOf,
+} from './spaces';
+import { toast } from './toast';
 import { initGit, forgetGitSection } from './git';
 import { TermView } from './terminal';
 import { OrbParticles } from './orb-particles';
@@ -211,6 +241,9 @@ function applyGitBadges(badges: Map<string, { branch: string; dirty: boolean }>)
       delete (li as HTMLElement).dataset.git;
     }
   }
+  // Espacios (Fase 2): refresca los dots agregados del rail (la actividad git
+  // de secciones ocultas debe seguir siendo perceptible).
+  renderSpacesRail();
 }
 
 const git = initGit({
@@ -235,6 +268,8 @@ const git = initGit({
     v.tts.push(text);
     v.tts.flush();
   },
+  // INVARIANTE (espacios Fase 2): el barrido de badges ve TODAS las secciones;
+  // el filtro por espacio solo afecta a la lista visible, nunca a este getter.
   getAllSections: () => [...sections.values()].map((s) => ({ sectionId: s.sectionId, cwd: s.cwd })),
 });
 
@@ -451,6 +486,9 @@ function updateCardVoiceState(sectionId: string, v: SectionVoice): void {
     updateMuteButton(muteBtnEl, v.muted);
     muteBtnEl.title = v.muted ? 'Activar voz en esta sección' : 'Silenciar voz en esta sección';
   }
+  // Espacios (Fase 2): el dot de voz del rail refleja si alguien habla en un
+  // espacio no visible (se llama en cambios de estado, no en niveles).
+  renderSpacesRail();
 }
 
 function updateCardVoiceLevel(sectionId: string, lvl: number): void {
@@ -579,29 +617,463 @@ function saveCustomTitle(sectionId: string, title: string): void {
 
 function loadSectionOrder(): string[] {
   try {
-    return JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || '[]');
+    const val = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || '[]');
+    return Array.isArray(val) ? val.filter((id): id is string => typeof id === 'string') : [];
   } catch {
     return [];
   }
 }
 
-function saveSectionOrder(order: string[]): void {
-  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order));
+// ---- Espacios: orden por bucket (Fase 3) -----------------------------------
+// Cada vista tiene su bucket en `bennzen.section-order.v1`: el id del espacio
+// o 'all'. La clave legacy (`bennzen.section-order`) solo se lee como
+// fallback de la vista «Todas» hasta el primer reorden; NUNCA se escribe
+// (downgrade seguro: la app vieja la sigue usando).
+
+/** Bucket de orden de la vista visible (`'all'` o id de espacio). */
+function visibleOrderBucket(): string {
+  const view = getActiveView();
+  return view === ALL_VIEW ? ALL_VIEW : view;
 }
 
-function getOrderedSections(): UiSection[] {
-  const order = loadSectionOrder();
-  const list = [...sections.values()];
+/**
+ * Orden efectivo de la vista «Todas»: bucket v1 si ya existe; si no, el orden
+ * global legacy (solo lectura). Así se conserva la disposición anterior hasta
+ * que el usuario reordena por primera vez en la nueva versión.
+ */
+function effectiveAllOrder(): string[] {
+  const stored = getOrderBucket(ALL_VIEW);
+  if (stored.length > 0) return stored;
+  return loadSectionOrder();
+}
+
+/** Ordena una lista según un bucket; los IDs ausentes conservan su orden relativo al final. */
+function sortByOrder(list: UiSection[], order: string[]): UiSection[] {
+  const rank = new Map(order.map((id, i) => [id, i]));
   list.sort((a, b) => {
-    const idxA = order.indexOf(a.sectionId);
-    const idxB = order.indexOf(b.sectionId);
-    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-    if (idxA !== -1) return -1;
-    if (idxB !== -1) return 1;
+    const rankA = rank.get(a.sectionId);
+    const rankB = rank.get(b.sectionId);
+    if (rankA !== undefined && rankB !== undefined) return rankA - rankB;
+    if (rankA !== undefined) return -1;
+    if (rankB !== undefined) return 1;
     return 0;
   });
   return list;
 }
+
+function orderInBucket(bucket: string): string[] {
+  return bucket === ALL_VIEW ? effectiveAllOrder() : getOrderBucket(bucket);
+}
+
+function getOrderedSections(): UiSection[] {
+  return sortByOrder([...sections.values()], orderInBucket(visibleOrderBucket()));
+}
+
+/** Saca una sección de todos los buckets salvo `'all'` (se va de su espacio). */
+function removeFromSpaceBuckets(orders: Record<string, string[]>, sectionId: string): void {
+  for (const [bucket, ids] of Object.entries(orders)) {
+    if (bucket === ALL_VIEW) continue;
+    const idx = ids.indexOf(sectionId);
+    if (idx !== -1) ids.splice(idx, 1);
+  }
+}
+
+/**
+ * Mueve una sección a otro espacio (`ALL_VIEW` = desasignar, queda sin
+ * espacio). Persiste membresía + orden y repinta. No toca `activeId`: el panel
+ * sigue mostrando la sección aunque salga de la vista visible.
+ */
+function moveSectionToSpace(sectionId: string, dest: string): void {
+  const moved = sections.get(sectionId);
+  if (!moved) return;
+  const to = dest === ALL_VIEW ? null : dest;
+  if (to && !loadSpaces().some((s) => s.id === to)) return;
+  const membership = loadSectionSpace();
+  if ((membership[sectionId] ?? null) === to) return;
+  if (to) membership[sectionId] = to;
+  else delete membership[sectionId];
+  saveSectionSpace(membership);
+  const orders = loadSpaceOrders();
+  removeFromSpaceBuckets(orders, sectionId);
+  const destBucket = to ?? UNASSIGNED_BUCKET;
+  orders[destBucket] = [...(orders[destBucket] ?? []).filter((id) => id !== sectionId), sectionId];
+  if (orders[ALL_VIEW]?.length && !orders[ALL_VIEW].includes(sectionId)) {
+    orders[ALL_VIEW].push(sectionId);
+  }
+  saveSpaceOrders(orders);
+  render();
+  const title = moved.customTitle || moved.agent;
+  const destName = to ? (loadSpaces().find((sp) => sp.id === to)?.name ?? 'el espacio') : 'Todas';
+  toast(`Sección «${title}» movida a «${destName}».`);
+}
+
+// ---- Espacios: vista activa + filtrado + rail (Fase 2) ---------------------
+
+/** Vista activa (`'all'` o id de espacio existente; lo desconocido cae a `'all'`). */
+function getActiveView(): string {
+  const stored = loadActiveSpace();
+  if (stored === ALL_VIEW) return ALL_VIEW;
+  return loadSpaces().some((s) => s.id === stored) ? stored : ALL_VIEW;
+}
+
+/** Normaliza la vista persistida (p. ej. el espacio se eliminó en otra pestaña). */
+function ensureValidActiveView(): string {
+  const view = getActiveView();
+  if (loadActiveSpace() !== view) saveActiveSpace(view);
+  return view;
+}
+
+/**
+ * Secciones visibles en la vista activa, sobre `getOrderedSections()` + membresía.
+ * Las secciones sin espacio solo aparecen en «Todas». El filtro solo afecta a
+ * la lista visible: `getAllSections()` (barrido git) sigue viendo TODAS.
+ */
+function getVisibleSections(): UiSection[] {
+  const view = getActiveView();
+  const ordered = getOrderedSections();
+  if (view === ALL_VIEW) return ordered;
+  const membership = loadSectionSpace();
+  return ordered.filter((s) => membership[s.sectionId] === view);
+}
+
+/** Dots agregados de un conjunto de secciones: voz hablando y git con cambios. */
+function spaceDots(memberIds: string[]): { speaking: boolean; gitDirty: boolean } {
+  let speaking = false;
+  let gitDirty = false;
+  for (const id of memberIds) {
+    if (!speaking) {
+      const v = sectionVoices.get(id);
+      if (v && v.speaking && !v.muted) speaking = true;
+    }
+    if (!gitDirty && gitBadges.get(id)?.dirty) gitDirty = true;
+    if (speaking && gitDirty) break;
+  }
+  return { speaking, gitDirty };
+}
+
+function makeRailItem(opts: {
+  id: string;
+  short: string;
+  full?: string;
+  all?: boolean;
+  tip: string;
+  active: boolean;
+  hue?: number;
+  dots?: { speaking: boolean; gitDirty: boolean };
+}): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = `rail-item${opts.all ? ' rail-item-all' : ''}${opts.active ? ' active' : ''}`;
+  btn.dataset.spaceId = opts.id;
+  btn.title = opts.tip;
+  btn.setAttribute('aria-label', opts.tip);
+  if (opts.active) btn.setAttribute('aria-current', 'true');
+  if (opts.hue !== undefined) btn.style.setProperty('--space-hue', String(opts.hue));
+  const short = document.createElement('span');
+  short.className = 'rail-short';
+  short.textContent = opts.short;
+  btn.append(short);
+  if (opts.full) {
+    const full = document.createElement('span');
+    full.className = 'rail-full';
+    full.textContent = opts.full;
+    btn.append(full);
+  }
+  if (opts.dots && (opts.dots.speaking || opts.dots.gitDirty)) {
+    const dots = document.createElement('span');
+    dots.className = 'rail-dots';
+    if (opts.dots.speaking) {
+      const d = document.createElement('span');
+      d.className = 'dot dot-speaking';
+      d.title = 'Alguien hablando en este espacio';
+      dots.appendChild(d);
+    }
+    if (opts.dots.gitDirty) {
+      const d = document.createElement('span');
+      d.className = 'dot dot-git';
+      d.title = 'Cambios git sin commitear en este espacio';
+      dots.appendChild(d);
+    }
+    btn.appendChild(dots);
+  }
+  return btn;
+}
+
+/**
+ * Hace un item del rail destino de arrastre: soltar una card la mueve a ese
+ * espacio (o la desasigna si es «Todas»). Resalta con `drag-over` mientras el
+ * arrastre está encima. Ignora arrastres externos (archivos, texto).
+ */
+function attachRailDrop(btn: HTMLButtonElement, destSpaceId: string): void {
+  btn.addEventListener('dragover', (e) => {
+    if (!draggedSectionId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    btn.classList.add('drag-over');
+  });
+  btn.addEventListener('dragleave', (e) => {
+    if (!btn.contains(e.relatedTarget as Node | null)) btn.classList.remove('drag-over');
+  });
+  btn.addEventListener('drop', (e) => {
+    e.preventDefault();
+    btn.classList.remove('drag-over');
+    const id = draggedSectionId || e.dataTransfer?.getData('text/plain');
+    if (!id) return;
+    moveSectionToSpace(id, destSpaceId);
+  });
+}
+
+/** Pinta el rail: «Todas» + espacios + «+», con conteos y dots agregados. */
+function renderSpacesRail(): void {
+  const rail = document.querySelector<HTMLElement>('#spaces-rail');
+  if (!rail) return;
+  const view = getActiveView();
+  const spaces = loadSpaces();
+  const membership = loadSectionSpace();
+  const allIds = [...sections.keys()];
+  rail.innerHTML = '';
+
+  const allBtn = makeRailItem({
+    id: ALL_VIEW,
+    short: '✦',
+    all: true,
+    tip: `Todas las secciones (${allIds.length}). Atajo: Alt+1.`,
+    active: view === ALL_VIEW,
+  });
+  allBtn.addEventListener('click', () => switchSpaceView(ALL_VIEW));
+  attachRailDrop(allBtn, ALL_VIEW);
+  rail.appendChild(allBtn);
+
+  for (let i = 0; i < spaces.length; i++) {
+    const space = spaces[i];
+    const memberIds = allIds.filter((id) => membership[id] === space.id);
+    const shortcut = i + 2 <= 9 ? ` Atajo: Alt+${i + 2}.` : '';
+    const tip =
+      `${space.name} — ${memberIds.length} ${memberIds.length === 1 ? 'sección' : 'secciones'}. ` +
+      `Doble clic para renombrar, clic derecho para eliminar.${shortcut}`;
+    const btn = makeRailItem({
+      id: space.id,
+      short: space.name.trim().slice(0, 1).toUpperCase() || '·',
+      full: space.name,
+      tip,
+      active: view === space.id,
+      hue: resolveSpaceColor(space, spaces),
+      dots: spaceDots(memberIds),
+    });
+    btn.addEventListener('click', () => switchSpaceView(space.id));
+    btn.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      void renameSpace(space.id);
+    });
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      void deleteSpace(space.id);
+    });
+    attachRailDrop(btn, space.id);
+    rail.appendChild(btn);
+  }
+
+  const add = document.createElement('button');
+  add.className = 'rail-item rail-add';
+  add.title = 'Crear espacio';
+  add.setAttribute('aria-label', 'Crear espacio');
+  const plus = document.createElement('span');
+  plus.className = 'rail-short';
+  plus.textContent = '+';
+  add.appendChild(plus);
+  add.addEventListener('click', () => void createSpace());
+  rail.appendChild(add);
+}
+
+/** Cambia de vista recordando la última sección activa de cada una. */
+function switchSpaceView(view: string): void {
+  const prev = getActiveView();
+  if (view === prev) return;
+  if (activeId && sections.has(activeId)) setSpaceActive(prev, activeId);
+  saveActiveSpace(view);
+  const visible = getVisibleSections();
+  const ids = new Set(visible.map((s) => s.sectionId));
+  const remembered = getSpaceActive(view);
+  if (remembered && ids.has(remembered)) {
+    activeId = remembered;
+  } else if (!activeId || !ids.has(activeId)) {
+    activeId = visible[0]?.sectionId ?? null;
+  }
+  if (activeId) setSpaceActive(view, activeId);
+  render();
+}
+
+function newSpaceId(): string {
+  return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Paleta pastel para el color del espacio. Devuelve el tono elegido o null
+ * si se omite (Omitir / backdrop / Escape): al crear se usa la sugerencia,
+ * al renombrar se conserva el color actual.
+ */
+function pickSpaceColor(preselect: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'space-color-overlay';
+    const pop = document.createElement('div');
+    pop.className = 'space-color-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Elegir color del espacio');
+    const title = document.createElement('p');
+    title.className = 'space-color-title';
+    title.textContent = 'Color del espacio';
+    const grid = document.createElement('div');
+    grid.className = 'space-color-grid';
+    let selected = SPACE_PALETTE.includes(preselect) ? preselect : SPACE_PALETTE[0];
+    const swatches: HTMLButtonElement[] = [];
+    for (const hue of SPACE_PALETTE) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'space-swatch';
+      b.style.setProperty('--space-hue', String(hue));
+      b.setAttribute('aria-label', `Tono ${hue}`);
+      b.addEventListener('click', () => {
+        selected = hue;
+        paint();
+      });
+      swatches.push(b);
+      grid.appendChild(b);
+    }
+    const paint = (): void => {
+      swatches.forEach((b, i) => b.classList.toggle('selected', SPACE_PALETTE[i] === selected));
+    };
+    paint();
+    const row = document.createElement('div');
+    row.className = 'space-color-actions';
+    const skip = document.createElement('button');
+    skip.type = 'button';
+    skip.className = 'ghost mini';
+    skip.textContent = 'Omitir';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'primary-btn mini';
+    ok.textContent = 'Elegir';
+    const done = (v: number | null): void => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(v);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        done(null);
+      }
+    };
+    ok.addEventListener('click', () => done(selected));
+    skip.addEventListener('click', () => done(null));
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) done(null);
+    });
+    document.addEventListener('keydown', onKey, true);
+    row.append(skip, ok);
+    pop.append(title, grid, row);
+    overlay.appendChild(pop);
+    document.body.appendChild(overlay);
+    ok.focus();
+  });
+}
+
+async function createSpace(): Promise<void> {
+  const name = await uiPrompt('Crear espacio', '', 'Nombre del espacio');
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) return;
+  const spaces = loadSpaces();
+  const id = newSpaceId();
+  const suggestion = resolveSpaceColor({ id, name: trimmed, createdAt: Date.now() }, spaces);
+  const color = (await pickSpaceColor(suggestion)) ?? suggestion;
+  spaces.push({ id, name: trimmed, createdAt: Date.now(), color });
+  saveSpaces(spaces);
+  switchSpaceView(id);
+  toast(`Espacio «${trimmed}» creado.`);
+}
+
+async function renameSpace(spaceId: string): Promise<void> {
+  const spaces = loadSpaces();
+  const space = spaces.find((s) => s.id === spaceId);
+  if (!space) return;
+  const name = await uiPrompt('Renombrar espacio', space.name, 'Nombre del espacio');
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) return;
+  const color = await pickSpaceColor(resolveSpaceColor(space, spaces));
+  let changed = false;
+  if (trimmed !== space.name) {
+    space.name = trimmed;
+    changed = true;
+  }
+  if (color !== null && color !== space.color) {
+    space.color = color;
+    changed = true;
+  }
+  if (!changed) return;
+  saveSpaces(spaces);
+  render();
+  toast(`Espacio «${space.name}» actualizado.`);
+}
+
+async function deleteSpace(spaceId: string): Promise<void> {
+  const spaces = loadSpaces();
+  const space = spaces.find((s) => s.id === spaceId);
+  if (!space) return;
+  const membership = loadSectionSpace();
+  const liveMembers = [...sections.keys()].filter((id) => membership[id] === spaceId).length;
+  // Las restaurables (guardadas pero no vivas) también pierden su espacio.
+  const restorableMembers = getRestorableIds(sections.keys()).filter((id) => membership[id] === spaceId).length;
+  const affected = liveMembers + restorableMembers;
+  const detail =
+    affected === 0
+      ? `El espacio «${space.name}» se eliminará.`
+      : affected === 1
+        ? `El espacio «${space.name}» se eliminará. Su sección pasará a «Todas» (no se cierra).`
+        : `El espacio «${space.name}» se eliminará. Sus ${affected} secciones pasarán a «Todas» (no se cierran).`;
+  const ok = await uiConfirm(detail, 'Eliminar espacio', true);
+  if (!ok) return;
+  saveSpaces(spaces.filter((s) => s.id !== spaceId));
+  // Los miembros (vivos o guardados para restaurar) quedan sin espacio;
+  // nunca se cierran secciones al eliminar un espacio.
+  const next = loadSectionSpace();
+  for (const [id, sid] of Object.entries(next)) {
+    if (sid === spaceId) delete next[id];
+  }
+  saveSectionSpace(next);
+  // Limpia el bucket de orden del espacio eliminado (sus IDs siguen en 'all').
+  const orders = loadSpaceOrders();
+  if (orders[spaceId] !== undefined) {
+    delete orders[spaceId];
+    saveSpaceOrders(orders);
+  }
+  if (getActiveView() === spaceId) saveActiveSpace(ALL_VIEW);
+  if (activeId && !sections.has(activeId)) {
+    const visible = getVisibleSections();
+    activeId = visible[0]?.sectionId ?? [...sections.keys()][0] ?? null;
+  }
+  render();
+  toast(
+    affected === 0
+      ? `Espacio «${space.name}» eliminado.`
+      : affected === 1
+        ? `Espacio «${space.name}» eliminado — su sección pasó a «Todas».`
+        : `Espacio «${space.name}» eliminado — sus ${affected} secciones pasaron a «Todas».`,
+  );
+}
+
+// Multi-pestaña: re-render cuando otra pestaña toca los espacios (evento storage).
+window.addEventListener('storage', (e) => {
+  if (
+    e.key === SPACES_KEY ||
+    e.key === ACTIVE_SPACE_KEY ||
+    e.key === SECTION_SPACE_KEY ||
+    e.key === SPACE_ACTIVE_KEY ||
+    e.key === SECTION_ORDER_V1_KEY ||
+    e.key === SECTION_CONFIG_KEY
+  ) {
+    render();
+  }
+});
 
 function formatShortPath(rawCwd: string): string {
   if (!rawCwd || rawCwd === '.') return '.';
@@ -626,6 +1098,8 @@ bridge.on((m) => {
     migrateMuteDefaults(m.sessions.map((s) => s.sectionId));
     const mutedMap = loadMutedSections();
     for (const info of m.sessions) {
+      // Restauración (Fase 4): el servidor conoce este ID → ya está vivo.
+      pendingRestore.delete(info.sectionId);
       const isMuted = isSectionMuted(info.sectionId, mutedMap);
       const ex = sections.get(info.sectionId);
       if (ex) {
@@ -640,7 +1114,7 @@ bridge.on((m) => {
           if (info.scrollback) {
             if (ex.term) {
               ex.term.clear();
-              ex.term.write(info.scrollback);
+              void ex.term.writeSilent(info.scrollback);
             } else {
               ex.pendingScrollback = info.scrollback;
             }
@@ -662,9 +1136,26 @@ bridge.on((m) => {
           pendingScrollback: info.scrollback,
         });
       }
+      // Espacios (Fase 1): refresca la config restaurable con los datos del
+      // servidor (incl. geometría cols/rows en pty). No purga nada: la
+      // restauración se basa en estas claves y solo closeSection() las purga.
+      saveSectionConfig(info.sectionId, {
+        agent: info.agent,
+        mode: info.mode,
+        kind: info.kind,
+        cwd: info.cwd,
+        cols: info.cols,
+        rows: info.rows,
+      });
     }
+    // INVARIANTE (espacios Fase 1): este prune solo retira de la UI las
+    // secciones ausentes del snapshot (p. ej. tras reiniciar el orquestador).
+    // NO purga `section-config` ni membresías: esas claves son la base de la
+    // restauración y solo closeSection() (cierre explícito con ✕) las purga.
     for (const id of [...sections.keys()]) {
-      if (!incoming.has(id)) {
+      // Restauración en curso: no podar sus optimistas (el servidor aún no
+      // los conoce; un rechazo los retira vía dropRestoredZombie).
+      if (!incoming.has(id) && !(restoreProgress && pendingRestore.has(id))) {
         sections.get(id)?.term?.dispose();
         sections.delete(id);
         const v = sectionVoices.get(id);
@@ -675,11 +1166,14 @@ bridge.on((m) => {
       }
     }
     if (!activeId || !sections.has(activeId)) {
-      activeId = sections.keys().next().value ?? null;
+      // Espacios (Fase 2): prefiere una sección visible en la vista activa.
+      const visible = getVisibleSections();
+      activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
     }
     updateMainMuteBtn();
     render();
   } else if (m.t === 'created') {
+    pendingRestore.delete(m.sectionId); // Restauración (Fase 4): confirmada por el servidor
     const s = sections.get(m.sectionId);
     if (s) s.ready = true;
     render();
@@ -731,6 +1225,14 @@ bridge.on((m) => {
       if (m.sectionId === activeId) renderAttachments();
     }
   } else if (m.t === 'error') {
+    // Restauración (Fase 4): el servidor rechazó un create restaurado (p. ej.
+    // cwd inválido). Se retira la sección local optimista SIN purgar storage
+    // (sigue restaurable) y se comunica el fallo sin abortar el resto.
+    if (m.sectionId && pendingRestore.has(m.sectionId)) {
+      dropRestoredZombie(m.sectionId, m.message);
+      render();
+      return;
+    }
     const s = m.sectionId ? sections.get(m.sectionId) : undefined;
     if (s) s.entries.push({ role: 'error', text: m.message });
     else vhint.textContent = `⚠️ ${m.message}`;
@@ -1387,8 +1889,29 @@ const newSectionOverlay = $('#new-section-modal');
 function openNewSection(): void {
   updateAgentSelect();
   updateProjectSelect();
+  updateSpaceSelect(); // default = vista activa
   renderProfiles(); // refresca la lista de perfiles guardados cada vez que se abre
   newSectionOverlay.hidden = false;
+  // Foco inicial en el destino (Fase 5): elegir espacio antes de crear.
+  setTimeout(() => $<HTMLSelectElement>('#ns-space').focus(), 60);
+}
+
+/** Llena el select «Espacio destino» del modal (default = vista activa). */
+function updateSpaceSelect(): void {
+  const sel = $<HTMLSelectElement>('#ns-space');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'Sin espacio (solo en Todas)';
+  sel.appendChild(none);
+  for (const space of loadSpaces()) {
+    const opt = document.createElement('option');
+    opt.value = space.id;
+    opt.textContent = space.name;
+    sel.appendChild(opt);
+  }
+  const view = getActiveView();
+  sel.value = view === ALL_VIEW ? '' : view;
 }
 function closeNewSection(): void {
   newSectionOverlay.hidden = true;
@@ -1400,12 +1923,31 @@ newSectionOverlay.addEventListener('click', (e) => {
   if (e.target === newSectionOverlay) closeNewSection(); // clic en el backdrop
 });
 
-/** Crea una sección (desde el form manual o desde un perfil) y la activa. */
-function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd: string): void {
+/**
+ * Crea una sección (desde el form manual o desde un perfil) y la activa.
+ * `spaceId`: destino explícito (`null`/'' = sin espacio); si se omite hereda
+ * la vista activa (los perfiles rápidos usan este camino).
+ */
+function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd: string, spaceId?: string | null): void {
   const sectionId = newSectionId();
+  const view = getActiveView();
+  let dest = spaceId === undefined ? (view === ALL_VIEW ? null : view) : spaceId || null;
+  if (dest && !loadSpaces().some((s) => s.id === dest)) dest = null;
   // Nace SILENCIADA: nada de TTS hasta que el usuario active el altavoz.
   const s: UiSection = { sectionId, agent, mode, cwd, ready: false, kind, entries: [], muted: true };
   sections.set(sectionId, s);
+  if (dest) setSpaceOf(sectionId, dest);
+  // Orden: añade al bucket destino y al de «Todas» (materializándolo con el
+  // orden efectivo actual si aún usaba el fallback legacy).
+  const orders = loadSpaceOrders();
+  const destBucket = dest ?? UNASSIGNED_BUCKET;
+  orders[destBucket] = [...(orders[destBucket] ?? []).filter((id) => id !== sectionId), sectionId];
+  if (!orders[ALL_VIEW]?.length) {
+    orders[ALL_VIEW] = sortByOrder([...sections.values()], effectiveAllOrder()).map((sec) => sec.sectionId);
+  } else if (!orders[ALL_VIEW].includes(sectionId)) {
+    orders[ALL_VIEW].push(sectionId);
+  }
+  saveSpaceOrders(orders);
   saveSectionMute(sectionId, true);
   getSectionVoice(sectionId); // materializa el estado de voz ya muteado
   activeId = sectionId;
@@ -1423,6 +1965,9 @@ function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd:
     bridge.create(sectionId, agent, mode, cwd, kind);
     render();
   }
+  // Espacios (Fase 1): guarda la config restaurable (en pty incluye la
+  // geometría recién medida por mountTerm).
+  saveSectionConfig(sectionId, { agent, mode, kind, cwd, cols: s.cols, rows: s.rows });
 }
 
 $('#ns-create').addEventListener('click', () => {
@@ -1430,8 +1975,9 @@ $('#ns-create').addEventListener('click', () => {
   const mode = $<HTMLSelectElement>('#mode').value as PermMode;
   const kind = $<HTMLSelectElement>('#kind').value as SectionKind;
   const { path: cwd } = getSelectedProjectCwd();
+  const dest = $<HTMLSelectElement>('#ns-space').value || null;
 
-  createSection(agent, mode, kind, cwd);
+  createSection(agent, mode, kind, cwd, dest);
 });
 
 // ---- Perfiles preseteados (localStorage) --------------------------------
@@ -1547,16 +2093,28 @@ function closeSection(sectionId: string): void {
   s?.term?.dispose();
   sections.delete(sectionId);
   saveCustomTitle(sectionId, '');
+  purgeSectionData(sectionId); // Espacios (Fase 1): purga config + membresía (cierre explícito con ✕)
   const v = sectionVoices.get(sectionId);
   if (v) {
     v.tts.stop();
     sectionVoices.delete(sectionId);
   }
   clearSectionMute(sectionId);
-  const order = loadSectionOrder().filter((id) => id !== sectionId);
-  saveSectionOrder(order);
+  // Espacios (Fase 3): purga el ID de todos los buckets de orden v1.
+  const orders = loadSpaceOrders();
+  let touched = false;
+  for (const ids of Object.values(orders)) {
+    const idx = ids.indexOf(sectionId);
+    if (idx !== -1) {
+      ids.splice(idx, 1);
+      touched = true;
+    }
+  }
+  if (touched) saveSpaceOrders(orders);
   if (activeId === sectionId) {
-    activeId = sections.keys().next().value ?? null;
+    // Espacios (Fase 2): prefiere una sección visible en la vista activa.
+    const visible = getVisibleSections();
+    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
   }
   updateMainMuteBtn();
   render();
@@ -1564,6 +2122,9 @@ function closeSection(sectionId: string): void {
 
 // ---- Terminal (modo pty) -------------------------------------------------
 const termEl = $('#term');
+
+// Última sección pty con nudge de repintado enviado (evita resize en cada render).
+let shownTermId: string | null = null;
 
 /** Crea/monta la TermView de una sección pty en el contenedor compartido. */
 function mountTerm(s: UiSection): void {
@@ -1583,12 +2144,13 @@ function mountTerm(s: UiSection): void {
   s.rows = term.rows;
 
   // Reproduce primero el scrollback persistido (snapshot) y luego lo acumulado.
+  // Replay silencioso: evita inyectar respuestas del terminal al stdin.
   if (s.pendingScrollback) {
-    term.write(s.pendingScrollback);
+    void term.writeSilent(s.pendingScrollback);
     s.pendingScrollback = undefined;
   }
   if (s.pendingTermData) {
-    term.write(s.pendingTermData);
+    void term.writeSilent(s.pendingTermData);
     s.pendingTermData = undefined;
   }
   term.focus();
@@ -2165,6 +2727,22 @@ document.addEventListener('keydown', (e) => {
   else if (!newSectionOverlay.hidden) closeNewSection();
 });
 
+// Espacios (Fase 5): Alt+1..9 cambia de vista (Todas + espacios por orden).
+// No actúa escribiendo texto (respeta Option+tecla en macOS y el terminal) ni
+// con modales abiertos.
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.key < '1' || e.key > '9') return;
+  if (isTyping()) return;
+  if (!dialogOverlay.hidden || !newSectionOverlay.hidden || !overlay.hidden || !readTextModal.hidden || git.isOpen()) {
+    return;
+  }
+  const views = [ALL_VIEW, ...loadSpaces().map((s) => s.id)];
+  const target = views[Number(e.key) - 1];
+  if (!target) return;
+  e.preventDefault();
+  switchSpaceView(target);
+});
+
 // ---- Modal de lectura de texto (sin límite de caracteres) ----------------
 let readingTargetSectionId: string | null = null;
 
@@ -2319,21 +2897,290 @@ async function fetchVoiceConfig(): Promise<void> {
 }
 void fetchVoiceConfig();
 
+// ---- Restauración post-cierre (Fase 4) --------------------------------------
+// Tras reiniciar el orquestador, las configs de `section-config` (que el prune
+// por snapshot NO purga) permiten recrear sesiones frescas con el MISMO
+// sectionId. Banner manual sobre la lista + recreación secuencial con pausa.
+let restoreProgress: { done: number; total: number } | null = null;
+/** IDs restaurados pendientes de confirmación (`created`/snapshot) del servidor. */
+const pendingRestore = new Set<string>();
+interface RestoreFailure {
+  id: string;
+  title: string;
+  reason: string;
+}
+let restoreFailures: RestoreFailure[] = [];
+let restoreFailTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Pinta el banner sobre la lista: botón, nota de sesiones frescas o progreso. */
+function renderRestoreBanner(): void {
+  const banner = document.querySelector<HTMLElement>('#restore-banner');
+  if (!banner) return;
+  if (restoreProgress) {
+    banner.hidden = false;
+    banner.innerHTML = '';
+    const prog = document.createElement('span');
+    prog.className = 'restore-progress';
+    const current = Math.min(restoreProgress.done + 1, restoreProgress.total);
+    prog.textContent = `Restaurando ${current}/${restoreProgress.total}…`;
+    banner.appendChild(prog);
+    return;
+  }
+  const restorable = getRestorableIds(sections.keys());
+  if (restorable.length === 0) {
+    banner.hidden = true;
+    banner.innerHTML = '';
+    return;
+  }
+  banner.hidden = false;
+  banner.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'restore-btn';
+  btn.textContent =
+    restorable.length === 1 ? 'Restaurar 1 sesión' : `Restaurar ${restorable.length} sesiones`;
+  btn.addEventListener('click', () => void restoreSessions());
+  const note = document.createElement('span');
+  note.className = 'restore-note';
+  note.textContent = 'Se recrean frescas, sin historial.';
+  banner.append(btn, note);
+}
+
+/** Elige la sección que quedará activa tras restaurar (se restaura primero). */
+function pickRestoreActive(ids: readonly string[]): string | null {
+  if (ids.length === 0) return null;
+  const remembered = getSpaceActive(getActiveView());
+  if (remembered && ids.includes(remembered)) return remembered;
+  const view = getActiveView();
+  if (view === ALL_VIEW) return ids[0];
+  const membership = loadSectionSpace();
+  return ids.find((id) => membership[id] === view) ?? ids[0];
+}
+
+/**
+ * Recrea secuencialmente las sesiones restaurables con su MISMO sectionId.
+ * Reutiliza título/mute/espacio desde storage; rpc directo, pty con la
+ * geometría guardada + setCapture según ttsClean. La TermView solo se monta
+ * para la que quede activa (vía render()); el resto usa pendingScrollback.
+ * Un fallo individual se comunica al final sin abortar el resto.
+ */
+async function restoreSessions(): Promise<void> {
+  if (restoreProgress) return; // ya hay una restauración en curso
+  const ids = getRestorableIds(sections.keys());
+  if (ids.length === 0) return;
+  const configs = loadSectionConfigs();
+  const titles = loadCustomTitles();
+  const mutedMap = loadMutedSections();
+  const membership = loadSectionSpace();
+  const orders = loadSpaceOrders();
+
+  if (restoreFailTimer !== null) {
+    clearTimeout(restoreFailTimer);
+    restoreFailTimer = null;
+  }
+  restoreFailures = [];
+  restoreProgress = { done: 0, total: ids.length };
+  // La futura activa se elige y restaura primero: los renders intermedios
+  // (snapshots del servidor por cada create) montan la TermView solo para ella.
+  const targetActive = pickRestoreActive(ids);
+  const ordered = targetActive ? [targetActive, ...ids.filter((id) => id !== targetActive)] : ids;
+  if (targetActive && (!activeId || !sections.has(activeId))) {
+    activeId = targetActive;
+    setSpaceActive(getActiveView(), targetActive);
+  }
+  renderRestoreBanner();
+
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  for (const id of ordered) {
+    const cfg = configs[id];
+    if (!cfg) {
+      restoreFailures.push({ id, title: titles[id] ?? id, reason: 'sin datos guardados' });
+    } else {
+      try {
+        const s: UiSection = {
+          sectionId: id,
+          agent: cfg.agent,
+          mode: cfg.mode,
+          cwd: cfg.cwd,
+          ready: false,
+          kind: cfg.kind,
+          muted: isSectionMuted(id, mutedMap),
+          customTitle: titles[id] || undefined,
+          entries: [],
+          cols: cfg.cols,
+          rows: cfg.rows,
+        };
+        sections.set(id, s);
+        getSectionVoice(id); // materializa la voz (respeta el mute guardado)
+        // La membresía y el orden ya están en storage; solo re-asegura el ID
+        // en su bucket por si otra pestaña lo movió a mitad del corte.
+        const destBucket = membership[id] ?? UNASSIGNED_BUCKET;
+        if (!orders[destBucket]?.includes(id)) {
+          orders[destBucket] = [...(orders[destBucket] ?? []), id];
+        }
+        if (orders[ALL_VIEW]?.length && !orders[ALL_VIEW].includes(id)) {
+          orders[ALL_VIEW].push(id);
+        }
+        pendingRestore.add(id);
+        if (cfg.kind === 'pty') {
+          bridge.create(id, cfg.agent, cfg.mode, cfg.cwd, cfg.kind, cfg.cols ?? 80, cfg.rows ?? 24);
+          bridge.setCapture(id, voiceCfg.ttsClean.enabled);
+        } else {
+          bridge.create(id, cfg.agent, cfg.mode, cfg.cwd, cfg.kind);
+        }
+      } catch (e) {
+        sections.delete(id);
+        pendingRestore.delete(id);
+        restoreFailures.push({
+          id,
+          title: titles[id] ?? id,
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    restoreProgress.done += 1;
+    renderRestoreBanner();
+    await sleep(150); // pausa entre spawns (evita tormentas de pty)
+  }
+  saveSpaceOrders(orders);
+  restoreProgress = null;
+  // Si nada restaurado quedó visible en la vista actual, salta a «Todas»
+  // para que el usuario vea el resultado (y la activa no quede oculta).
+  const nowVisible = new Set(getVisibleSections().map((s) => s.sectionId));
+  if (!ordered.some((id) => nowVisible.has(id))) switchSpaceView(ALL_VIEW);
+  if (!activeId || !sections.has(activeId)) {
+    const visible = getVisibleSections();
+    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
+    if (activeId) setSpaceActive(getActiveView(), activeId);
+  }
+  if (restoreFailures.length > 0) scheduleRestoreFailuresFlush();
+  const restoredOk = ordered.length - restoreFailures.length;
+  if (restoredOk > 0) {
+    toast(
+      restoredOk === ordered.length
+        ? restoredOk === 1
+          ? '1 sesión restaurada.'
+          : `${restoredOk} sesiones restauradas.`
+        : `${restoredOk} de ${ordered.length} sesiones restauradas.`,
+    );
+  }
+  render();
+}
+
+/**
+ * Retira una restauración rechazada por el servidor. NO purga storage (config,
+ * título, mute, membresía, orden): la sección sigue restaurable y el banner
+ * la vuelve a ofrecer como reintento manual.
+ */
+function dropRestoredZombie(sectionId: string, reason: string): void {
+  pendingRestore.delete(sectionId);
+  const s = sections.get(sectionId);
+  s?.term?.dispose();
+  sections.delete(sectionId);
+  gitBadges.delete(sectionId);
+  const v = sectionVoices.get(sectionId);
+  if (v) {
+    v.tts.stop();
+    sectionVoices.delete(sectionId);
+  }
+  const titles = loadCustomTitles();
+  restoreFailures.push({ id: sectionId, title: titles[sectionId] ?? sectionId, reason });
+  if (activeId === sectionId) {
+    const visible = getVisibleSections();
+    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
+  }
+  scheduleRestoreFailuresFlush();
+}
+
+/** Comunica los fallos de restauración en un único aviso agrupado. */
+function scheduleRestoreFailuresFlush(): void {
+  if (restoreFailTimer !== null) return; // ya hay un aviso programado
+  restoreFailTimer = setTimeout(() => {
+    restoreFailTimer = null;
+    if (restoreFailures.length === 0) return;
+    const failures = restoreFailures;
+    restoreFailures = [];
+    const detail = failures.map((f) => `«${f.title}»: ${f.reason}`).join(' · ');
+    const head =
+      failures.length === 1
+        ? 'No se pudo restaurar 1 sesión'
+        : `No se pudieron restaurar ${failures.length} sesiones`;
+    void uiAlert(
+      `${head} (${detail}). El resto sigue activo y puedes reintentarlo desde el banner.`,
+      'Restauración incompleta',
+      'error',
+    );
+  }, 900);
+}
+
+// Espacios (Fase 5): pista one-time para agrupar cuando ya hay >3 secciones
+// y aún no se ha creado ningún espacio. Sin modales: un toast descartable.
+const SPACES_HINT_KEY = 'bennzen.spaces-hint-dismissed';
+let spacesHintShown = false;
+function maybeShowSpacesHint(): void {
+  if (spacesHintShown) return;
+  try {
+    if (localStorage.getItem(SPACES_HINT_KEY) !== null) {
+      spacesHintShown = true;
+      return;
+    }
+  } catch {
+    spacesHintShown = true;
+    return;
+  }
+  if (sections.size <= 3 || loadSpaces().length > 0) return;
+  spacesHintShown = true;
+  try {
+    localStorage.setItem(SPACES_HINT_KEY, '1');
+  } catch {
+    /* storage no disponible: la pista se muestra igual, una vez por carga */
+  }
+  toast('¿Muchas secciones? Pulsa ＋ en el rail para agruparlas en espacios.', { duration: 9000 });
+}
+
 // ---- Render --------------------------------------------------------------
 function render(): void {
+  // Espacios (Fase 2): normaliza la vista y pinta el rail antes que la lista.
+  ensureValidActiveView();
+  renderSpacesRail();
+  renderRestoreBanner(); // Espacios (Fase 4): banner sobre la lista si hay restaurables
+  maybeShowSpacesHint(); // Espacios (Fase 5): pista one-time si >3 secciones
+
   const list = $('#sections');
   list.innerHTML = '';
 
-  const orderedSections = getOrderedSections();
+  const visibleSections = getVisibleSections();
 
-  if (orderedSections.length === 0) {
+  if (visibleSections.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'sections-empty';
-    empty.textContent = 'Sin secciones. Crea una con ＋.';
+    if (sections.size === 0) {
+      empty.textContent = 'Sin secciones. Crea una con ＋.';
+    } else {
+      const space = loadSpaces().find((s) => s.id === getActiveView());
+      empty.textContent = space
+        ? `El espacio «${space.name}» está vacío — arrastra secciones aquí o crea una nueva.`
+        : 'Sin secciones en esta vista.';
+      // Zona de drop: soltar una card la trae a la vista activa.
+      empty.addEventListener('dragover', (e) => {
+        if (!draggedSectionId) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        empty.classList.add('drop-over');
+      });
+      empty.addEventListener('dragleave', () => empty.classList.remove('drop-over'));
+      empty.addEventListener('drop', (e) => {
+        e.preventDefault();
+        empty.classList.remove('drop-over');
+        const id = draggedSectionId || e.dataTransfer?.getData('text/plain');
+        if (!id) return;
+        moveSectionToSpace(id, getActiveView());
+      });
+    }
     list.appendChild(empty);
   }
 
-  for (const s of orderedSections) {
+  for (const s of visibleSections) {
     const v = getSectionVoice(s.sectionId);
     const isSpeaking = v.speaking && !v.muted;
     s.muted = v.muted;
@@ -2491,6 +3338,7 @@ function render(): void {
     li.addEventListener('click', () => {
       if (editingTitleSectionId === s.sectionId) return;
       activeId = s.sectionId;
+      setSpaceActive(getActiveView(), s.sectionId); // Espacios (Fase 2): recuerda por vista
       const curV = getSectionVoice(s.sectionId);
       updateMainMuteBtn();
       if (!listening) {
@@ -2543,7 +3391,9 @@ function render(): void {
 
       if (fromId && fromId !== toId) {
         const insertAfter = e.clientY >= li.getBoundingClientRect().top + li.getBoundingClientRect().height / 2;
-        const currentOrder = getOrderedSections().map((sec) => sec.sectionId);
+        // Espacios (Fase 3): el reorden persiste en el bucket del espacio
+        // visible; los demás buckets no se tocan.
+        const currentOrder = getVisibleSections().map((sec) => sec.sectionId);
         const fromIdx = currentOrder.indexOf(fromId);
         if (fromIdx !== -1) currentOrder.splice(fromIdx, 1);
 
@@ -2554,7 +3404,7 @@ function render(): void {
         } else {
           currentOrder.push(fromId);
         }
-        saveSectionOrder(currentOrder);
+        saveOrderBucket(visibleOrderBucket(), currentOrder);
         render();
       }
     });
@@ -2563,6 +3413,9 @@ function render(): void {
       draggedSectionId = null;
       document.querySelectorAll('#sections .card').forEach((el) => {
         el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+      });
+      document.querySelectorAll('#spaces-rail .rail-item.drag-over').forEach((el) => {
+        el.classList.remove('drag-over');
       });
     });
 
@@ -2584,8 +3437,14 @@ function render(): void {
     termEl.hidden = false;
     mountTerm(active); // crea la TermView si aún no existe; repinta scrollback pendiente
     active.term?.show(); // muestra ESTE pane y reajusta a la geometría visible
+    // Al cambiar de sección pty visible, SIGWINCH obliga a la TUI a repintar su alt-buffer.
+    if (shownTermId !== active.sectionId) {
+      shownTermId = active.sectionId;
+      if (active.ready && active.cols && active.rows) bridge.termResize(active.sectionId, active.cols, active.rows);
+    }
     active.term?.focus();
   } else {
+    shownTermId = null;
     // Modo rpc (o sin sección): muestra el log, oculta el terminal.
     termEl.hidden = true;
     log.hidden = false;

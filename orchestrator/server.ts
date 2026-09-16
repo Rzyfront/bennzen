@@ -104,9 +104,14 @@ function broadcast(msg: ServerMsg): void {
   }
 }
 
-/** Estado COMPLETO (rpc + pty) a todos los clientes (nada se pierde). */
+/** Snapshot ligero a todos los clientes (sin scrollback; ver dentro). */
 function broadcastSnapshot(): void {
-  broadcast({ t: 'snapshot', sessions: [...registry.list(), ...ptyRegistry.list()] });
+  // Sin scrollback: los términos vivos ya reciben term-data; el scrollback solo
+  // viaja en el snapshot inicial de conexión. Así se evitan replays viejos.
+  const sessions = [...registry.list(), ...ptyRegistry.list()].map((s) =>
+    s.kind === 'pty' ? { ...s, scrollback: undefined } : s,
+  );
+  broadcast({ t: 'snapshot', sessions });
 }
 
 wss.on('connection', (ws) => {

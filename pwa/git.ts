@@ -465,7 +465,16 @@ export function initGit(deps: GitDeps): GitHandle {
       `${dotHtml(statusDot())}<span>${esc(st.name)}${caret} · ⎇ ${esc(branch)}` +
       (ab ? ` ${esc(ab)}` : '') + '</span>';
     const author = st.user.name || st.lastCommit?.author || st.remoteHost || '—';
-    line2.textContent = `${author} · ${totalsText()}${prSuffix()}`;
+    const base = `${author} · ${totalsText()}`;
+    const pr = s.pr;
+    if (pr && pr.ok && pr.pr) {
+      // El nº de PR es un enlace directo a GitHub web (ver handler de gitInfo).
+      line2.innerHTML =
+        `${esc(base)} · <span class="git-pr-link" data-pr-url="${esc(pr.pr.url)}">` +
+        `PR #${pr.pr.number} ↗</span>`;
+    } else {
+      line2.textContent = `${base}${prSuffix()}`;
+    }
     gitInfo.title = `Git · ${s.root ?? ''} — clic para abrir el panel`;
   }
 
@@ -1170,6 +1179,12 @@ export function initGit(deps: GitDeps): GitHandle {
     if (!s) return;
     if ((e.target as HTMLElement).closest('.git-caret')) {
       if (s.repos.length > 1) selector.hidden = !selector.hidden;
+      return;
+    }
+    const prLink = (e.target as HTMLElement).closest('.git-pr-link');
+    if (prLink) {
+      const url = prLink.getAttribute('data-pr-url');
+      if (url) window.open(url, '_blank', 'noopener');
       return;
     }
     const gitMissing = tooling && !tooling.git.ok;

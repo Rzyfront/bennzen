@@ -126,11 +126,11 @@ export class PtyRegistry {
   ): void {
     const { file, args, env: envOverride } = resolveCommand(agent, mode);
     const proc = pty.spawn(file, args, {
-      name: 'xterm-color',
+      name: 'xterm-256color', // coincide con el TERM anunciado para terminfo correcto
       cols,
       rows,
       cwd,
-      env: { ...process.env, ...(envOverride ?? {}) },
+      env: { ...process.env, TERM: 'xterm-256color', ...(envOverride ?? {}) },
     });
 
     const extractor = new TerminalExtractor(cols, rows, agent, (text) =>
