@@ -64,22 +64,28 @@
 
       <section class="panel">
         <!-- Columna 1: salida (texto rpc o terminal pty) -->
-        <div class="col col-out">
-          <!-- rpc: log de texto -->
-          <pre id="log">Sin sección activa.</pre>
-          <!-- pty: terminal real (xterm) -->
-          <div id="term" class="term" hidden></div>
-          <div class="bar" id="textbar">
-            <!-- Fila de adjuntos pendientes (chips con miniatura), solo modo rpc -->
-            <div id="attachments" class="attachments" hidden></div>
-            <div class="bar-row">
-              <button id="attach-btn" class="attach-btn" title="Adjuntar imagen (PNG, JPG, GIF, WebP)">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-                </svg>
-              </button>
-              <input id="text" type="text" placeholder="…o escribe y Enter" />
-              <input id="attach-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+        <div class="col col-out" id="col-out">
+          <!-- Canvas de partículas solitarias para estado vacío (sin sección activa) -->
+          <canvas id="log-particles-canvas" class="log-particles-canvas"></canvas>
+
+          <!-- Vista de sección activa (emerge del centro al crearse) -->
+          <div id="section-view" class="section-view" hidden>
+            <!-- rpc: log de texto -->
+            <pre id="log"></pre>
+            <!-- pty: terminal real (xterm) -->
+            <div id="term" class="term" hidden></div>
+            <div class="bar" id="textbar">
+              <!-- Fila de adjuntos pendientes (chips con miniatura), solo modo rpc -->
+              <div id="attachments" class="attachments" hidden></div>
+              <div class="bar-row">
+                <button id="attach-btn" class="attach-btn" title="Adjuntar imagen (PNG, JPG, GIF, WebP)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                  </svg>
+                </button>
+                <input id="text" type="text" placeholder="…o escribe y Enter" />
+                <input id="attach-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+              </div>
             </div>
           </div>
         </div>

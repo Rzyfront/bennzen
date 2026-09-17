@@ -32,6 +32,7 @@ import { toast } from './toast';
 import { initGit, forgetGitSection } from './git';
 import { TermView } from './terminal';
 import { OrbParticles } from './orb-particles';
+import { LogParticles } from './log-particles';
 import {
   MicMeter,
   createTts,
@@ -217,6 +218,7 @@ function uiConfirm(message: string, title: string = 'Confirmar acción', danger:
 
 const sections = new Map<string, UiSection>();
 let activeId: string | null = null;
+let logParticles: LogParticles | null = null;
 
 const bridge = new Bridge(WS_URL);
 
@@ -1165,10 +1167,10 @@ bridge.on((m) => {
         }
       }
     }
-    if (!activeId || !sections.has(activeId)) {
-      // Espacios (Fase 2): prefiere una sección visible en la vista activa.
-      const visible = getVisibleSections();
-      activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
+    const visible = getVisibleSections();
+    if (!activeId || !visible.some((s) => s.sectionId === activeId)) {
+      activeId = visible[0]?.sectionId ?? null;
+      if (activeId) setSpaceActive(getActiveView(), activeId);
     }
     updateMainMuteBtn();
     render();
@@ -1929,6 +1931,8 @@ newSectionOverlay.addEventListener('click', (e) => {
  * la vista activa (los perfiles rápidos usan este camino).
  */
 function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd: string, spaceId?: string | null): void {
+  const currentVisible = getVisibleSections();
+  const wasEmpty = currentVisible.length === 0 || !!(logParticles && logParticles.isAlive);
   const sectionId = newSectionId();
   const view = getActiveView();
   let dest = spaceId === undefined ? (view === ALL_VIEW ? null : view) : spaceId || null;
@@ -1953,21 +1957,41 @@ function createSection(agent: AgentKind, mode: PermMode, kind: SectionKind, cwd:
   activeId = sectionId;
   closeNewSection();
 
-  if (kind === 'pty') {
-    // Montamos la TermView primero para medir cols/rows reales y crear con esa geometría.
-    render(); // hace visible el contenedor de terminal
-    mountTerm(s);
-    bridge.create(sectionId, agent, mode, cwd, kind, s.cols ?? 80, s.rows ?? 24);
-    // Captura total del extractor si la limpieza TTS está activa (el proxy la
-    // traduce a lenguaje natural). Con limpieza OFF, filtrado normal.
-    bridge.setCapture(sectionId, voiceCfg.ttsClean.enabled);
+  // Partículas: colapsar si esta es la primera sección (estaban vagando).
+  const finishCreate = (emergeAnimation: boolean) => {
+    if (kind === 'pty') {
+      render();
+      mountTerm(s);
+      bridge.create(sectionId, agent, mode, cwd, kind, s.cols ?? 80, s.rows ?? 24);
+      bridge.setCapture(sectionId, voiceCfg.ttsClean.enabled);
+    } else {
+      bridge.create(sectionId, agent, mode, cwd, kind);
+      render();
+    }
+    saveSectionConfig(sectionId, { agent, mode, kind, cwd, cols: s.cols, rows: s.rows });
+
+    if (emergeAnimation) {
+      const secView = $('#section-view');
+      secView.classList.remove('collapse-to-center');
+      secView.classList.add('emerge-from-center');
+      secView.addEventListener('animationend', () => {
+        secView.classList.remove('emerge-from-center');
+      }, { once: true });
+    }
+  };
+
+  if (wasEmpty && logParticles && logParticles.isAlive) {
+    // Succión hacia el medio (~3s) simulando que algo se las traga
+    logParticles.collapse().then(() => {
+      if (logParticles) { logParticles.dispose(); logParticles = null; }
+      // Luego algo emerge del medio otra vez y eso que emerge es la sección que se crea
+      finishCreate(true);
+    });
   } else {
-    bridge.create(sectionId, agent, mode, cwd, kind);
-    render();
+    // Sin animación (ya hay secciones, o no hay partículas activas)
+    if (logParticles) { logParticles.dispose(); logParticles = null; }
+    finishCreate(false);
   }
-  // Espacios (Fase 1): guarda la config restaurable (en pty incluye la
-  // geometría recién medida por mountTerm).
-  saveSectionConfig(sectionId, { agent, mode, kind, cwd, cols: s.cols, rows: s.rows });
 }
 
 $('#ns-create').addEventListener('click', () => {
@@ -2085,7 +2109,23 @@ $('#ns-save-profile').addEventListener('click', async () => {
   renderProfiles();
 });
 
-function closeSection(sectionId: string): void {
+async function closeSection(sectionId: string): Promise<void> {
+  const visibleBefore = getVisibleSections();
+  const isLastInView = visibleBefore.length === 1 && visibleBefore[0].sectionId === sectionId;
+  const secView = $('#section-view');
+
+  if (isLastInView && !secView.hidden) {
+    // La última sección de esta vista colapsa al centro antes de que broten las partículas
+    secView.classList.remove('emerge-from-center');
+    secView.classList.add('collapse-to-center');
+    await new Promise<void>((r) => {
+      secView.addEventListener('animationend', () => {
+        secView.classList.remove('collapse-to-center');
+        r();
+      }, { once: true });
+    });
+  }
+
   bridge.close(sectionId); // backend hace teardown del agente (sin huérfanos)
   forgetGitSection(sectionId); // limpia bennzen.git-repo-by-section
   gitBadges.delete(sectionId);
@@ -2111,13 +2151,24 @@ function closeSection(sectionId: string): void {
     }
   }
   if (touched) saveSpaceOrders(orders);
-  if (activeId === sectionId) {
-    // Espacios (Fase 2): prefiere una sección visible en la vista activa.
-    const visible = getVisibleSections();
-    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
-  }
+
+  // Espacios: si la sección activa era la eliminada, busca el siguiente en ESTA vista.
+  // Si no queda ninguna sección en este grupo, activeId DEBE SER null (no robar secciones de otro grupo).
+  const visibleAfter = getVisibleSections();
+  activeId = visibleAfter[0]?.sectionId ?? null;
+  setSpaceActive(getActiveView(), activeId || '');
+
   updateMainMuteBtn();
   render();
+
+  // Partículas: si la vista activa quedó sin secciones, del centro de todo emergen otra vez las partículas y vuelven a poblar el espacio
+  if (visibleAfter.length === 0) {
+    const particlesCanvas = $<HTMLCanvasElement>('#log-particles-canvas');
+    if (!logParticles || !logParticles.isAlive) {
+      logParticles = new LogParticles(particlesCanvas);
+    }
+    logParticles.expand();
+  }
 }
 
 // ---- Terminal (modo pty) -------------------------------------------------
@@ -2968,6 +3019,16 @@ async function restoreSessions(): Promise<void> {
   if (restoreProgress) return; // ya hay una restauración en curso
   const ids = getRestorableIds(sections.keys());
   if (ids.length === 0) return;
+
+  const hadParticles = !!(logParticles && logParticles.isAlive);
+  if (hadParticles && logParticles) {
+    await logParticles.collapse();
+    if (logParticles) {
+      logParticles.dispose();
+      logParticles = null;
+    }
+  }
+
   const configs = loadSectionConfigs();
   const titles = loadCustomTitles();
   const mutedMap = loadMutedSections();
@@ -3050,7 +3111,7 @@ async function restoreSessions(): Promise<void> {
   if (!ordered.some((id) => nowVisible.has(id))) switchSpaceView(ALL_VIEW);
   if (!activeId || !sections.has(activeId)) {
     const visible = getVisibleSections();
-    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
+    activeId = visible[0]?.sectionId ?? null;
     if (activeId) setSpaceActive(getActiveView(), activeId);
   }
   if (restoreFailures.length > 0) scheduleRestoreFailuresFlush();
@@ -3065,6 +3126,15 @@ async function restoreSessions(): Promise<void> {
     );
   }
   render();
+
+  if (hadParticles) {
+    const secView = $('#section-view');
+    secView.classList.remove('collapse-to-center');
+    secView.classList.add('emerge-from-center');
+    secView.addEventListener('animationend', () => {
+      secView.classList.remove('emerge-from-center');
+    }, { once: true });
+  }
 }
 
 /**
@@ -3087,7 +3157,8 @@ function dropRestoredZombie(sectionId: string, reason: string): void {
   restoreFailures.push({ id: sectionId, title: titles[sectionId] ?? sectionId, reason });
   if (activeId === sectionId) {
     const visible = getVisibleSections();
-    activeId = visible[0]?.sectionId ?? sections.keys().next().value ?? null;
+    activeId = visible[0]?.sectionId ?? null;
+    setSpaceActive(getActiveView(), activeId || '');
   }
   scheduleRestoreFailuresFlush();
 }
@@ -3423,35 +3494,66 @@ function render(): void {
     list.appendChild(li);
   }
 
+  const visibleIds = new Set(visibleSections.map((s) => s.sectionId));
+  // Invariante de Espacios: la sección activa SIEMPRE debe pertenecer a la vista actual.
+  // Si la vista actual no contiene activeId (p. ej. grupo vacío o activeId de otro grupo),
+  // se ajusta a la primera visible de esta vista o a null (mostrando partículas).
+  if (activeId && !visibleIds.has(activeId)) {
+    activeId = visibleSections[0]?.sectionId ?? null;
+    setSpaceActive(getActiveView(), activeId || '');
+  }
+
   const active = activeId ? sections.get(activeId) : undefined;
   const log = $('#log');
-  // En modo TUI se escribe en el propio xterm → la barra de texto sobra.
-  $('#textbar').hidden = !!(active && active.kind === 'pty');
+  const sectionView = $('#section-view');
+  const particlesCanvas = $<HTMLCanvasElement>('#log-particles-canvas');
 
   // Solo el pane de la sección activa es visible; los demás siguen vivos pero ocultos.
   for (const sec of sections.values()) sec.term?.hide();
 
-  if (active && active.kind === 'pty') {
-    // Modo pty: oculta el log de texto, muestra el terminal.
-    log.hidden = true;
-    termEl.hidden = false;
-    mountTerm(active); // crea la TermView si aún no existe; repinta scrollback pendiente
-    active.term?.show(); // muestra ESTE pane y reajusta a la geometría visible
-    // Al cambiar de sección pty visible, SIGWINCH obliga a la TUI a repintar su alt-buffer.
-    if (shownTermId !== active.sectionId) {
-      shownTermId = active.sectionId;
-      if (active.ready && active.cols && active.rows) bridge.termResize(active.sectionId, active.cols, active.rows);
+  if (active) {
+    sectionView.hidden = false;
+    particlesCanvas.hidden = true;
+    if (logParticles) {
+      logParticles.dispose();
+      logParticles = null;
     }
-    active.term?.focus();
+
+    // En modo TUI se escribe en el propio xterm → la barra de texto sobra.
+    $('#textbar').hidden = active.kind === 'pty';
+
+    if (active.kind === 'pty') {
+      // Modo pty: oculta el log de texto, muestra el terminal.
+      log.hidden = true;
+      termEl.hidden = false;
+      mountTerm(active); // crea la TermView si aún no existe; repinta scrollback pendiente
+      active.term?.show(); // muestra ESTE pane y reajusta a la geometría visible
+      // Al cambiar de sección pty visible, SIGWINCH obliga a la TUI a repintar su alt-buffer.
+      if (shownTermId !== active.sectionId) {
+        shownTermId = active.sectionId;
+        if (active.ready && active.cols && active.rows) bridge.termResize(active.sectionId, active.cols, active.rows);
+      }
+      active.term?.focus();
+    } else {
+      shownTermId = null;
+      // Modo rpc: muestra el log, oculta el terminal.
+      termEl.hidden = true;
+      log.hidden = false;
+      log.textContent = active.entries.map(formatEntry).join('\n') || '—';
+      log.scrollTop = log.scrollHeight;
+    }
   } else {
+    // Sin sección activa: se oculta toda la vista de sección y se muestran las partículas
     shownTermId = null;
-    // Modo rpc (o sin sección): muestra el log, oculta el terminal.
     termEl.hidden = true;
-    log.hidden = false;
-    log.textContent = active
-      ? active.entries.map(formatEntry).join('\n') || '—'
-      : 'Sin sección activa.';
-    log.scrollTop = log.scrollHeight;
+    log.hidden = true;
+    log.textContent = '';
+    sectionView.hidden = true;
+    particlesCanvas.hidden = false;
+
+    if (!logParticles || !logParticles.isAlive) {
+      logParticles = new LogParticles(particlesCanvas);
+    }
   }
 
   // Chips de adjuntos de la sección activa (solo rpc; se oculta solo si no aplica).
